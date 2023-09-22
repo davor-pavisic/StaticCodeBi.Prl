@@ -1,0 +1,3043 @@
+---
+title: "Payroll BI Dashboard Bolivia"
+runtime: shiny
+output: 
+  flexdashboard::flex_dashboard:
+    logo: jalasoft.png
+    orientation: rows
+    vertical_layout: fill
+    theme: spacelab
+---
+
+```{r setup, context="data", include=FALSE}
+library(flexdashboard)
+library(shiny)
+#library(loggit)
+library(dplyr)
+library(readr)
+library(lubridate)
+library(plotly)
+library(DT)
+library(scales)
+library(shinythemes)
+library(wesanderson)
+#library(zoo)   # for time series
+
+# Board Color definitions
+JS.Blue   <- "#4d77a3"  # Basic Jalasoft Blue
+JS.Orange <- "orange"   # Jalasoft Warning
+
+# from http://sape.inf.usi.ch/quick-reference/ggplot2/colour
+
+# Color Definitions
+BI_Gray <- "lightsteelblue4"
+BI_Red  <- "indianred1"
+BI_Blue <- "seagreen3"
+#BI_Blue <- "deepskyblue4"
+BI_ValueBoxStyle <- "color:white;text-align:left"
+
+# Version control
+Software.Version <- "3.12.1 - August.2023"
+
+# set the logging destination
+#set_logfile("../out/loggit.json")
+
+# Note that paths here are always relative to where the source code is.
+Budget.File.Bol <- "Bol.Payroll.2023.csv"  # executed/estimated Bol Budget in usd for 2023: paid via labor law contracts
+Budget.File.Lat <- "Lat.Payroll.2023.csv"  # executed/estimated Lat Budget in usd for 2023: paid via Latam contracts (payoneer)
+Budget.File.Eng <- "Eng.Payroll.2023.csv"  # executed/estimated Eng Budget in usd for 2023: the sum of Bol + Lat
+Budget.File.2022<- "Eng.2022.Base.csv"     # reference file from 2022
+Estimated.Raises<- "Estim.Raises.Summary.2023.csv" # estimated 360/prom raises per unit summary file
+
+
+#File.Jhon.Doe               <- "data/Jhon.Doe.Bol.csv" 
+
+# Global Variables Bolivia Specific
+# Gov.Raise <- 0.035 # ESTIMATED 3.5% raise to be fully known in May 2022
+P.Indem	  <- 0.0833 # indeminizacion
+P.Aguin1	<- 0.0833 # Aguinaldo1
+P.Aguin2	<- 0.0    # Aguinaldo2 is known to be 0 for 2022
+Aportes	  <- 0.1671 # aportes
+USD2BOB	  <- 6.96  # usd exchange rate
+
+# FL min salary data
+# smn2020 <- 2122 # salario min 2020   NOT NEEDED
+# smn2021 <- 2164 # salario min 2021
+# smn2022 <- 2240 # salario min 2022 ESTIMATED
+
+# **** ************** ****
+
+# Factors and levels for ordered factors
+month_levels <- c("January","February","March","April","May","June","July","August",
+                  "September","October","November","December")
+mon_lvls    <- c("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug",
+                  "Sep","Oct","Nov","Dec")
+
+dept_levels <- c("Automation", "DEV", "DevOps","INFO DEV", "QE","UI/UX","Management")
+
+eng_levels <- c("Junior", "Staff", "Senior", "Junior Architect",
+                "Project Administrator",
+                "Junior Core Manager","Core Manager","Senior Core Manager")
+
+unit_levels <- c("Unit 01", "Unit 02", "Unit 03", "Unit 04", "Unit 05",
+                 "Unit 06", "Unit 07", "Unit SES") # Removed Unit 08
+
+curve_category_order <- c("2022","Target","Market")
+
+# Load 2022 data
+Load_Reference_Data <- function(){
+  # Load and Add fake rows for Dept and Levels that are not present... 
+  # this is only so the graphs dont show any errors
+  # *** PENDING ***need to remove outliers on the 2022 data
+  ref.dat <- read_csv(Budget.File.2022,
+                      col_types = cols_only(ID=col_integer(),	
+                                            Dept = readr::col_factor(levels = dept_levels,
+                                                                     ordered=TRUE),
+                                            Level = readr::col_factor(levels = eng_levels,
+                                                                      ordered=TRUE),
+                                            Seniority = col_double(),
+                                            Basic = col_double(),
+                                            TotalComp = col_double())) %>%
+    add_row(ID = 0, Dept="DevOps",	 Level="Senior",	Seniority=10,	Basic=0, TotalComp=0) %>%
+    add_row(ID = 1, Dept="INFO DEV",	 Level="Senior",	Seniority=10,	Basic=0, TotalComp=0) %>%
+    add_row(ID = 2, Dept="UI/UX",	 Level="Junior",	Seniority=1,	Basic=0, TotalComp=0) %>%
+    mutate(Dept = factor(Dept,levels=dept_levels,ordered = T),
+           Level = factor(Level,levels=eng_levels,ordered = T))
+  
+  # remove outliers... 
+  outlier.list<-c(
+   # JR automation
+    3197, 2650, 3410, 3244, 3055, 3277, 2463, 1670,        # jr auto confirmed
+    3111,                                                  # removed in round 2 04.23
+
+   # Jr DEV
+    2605, 2627, 3186, 3049, 1615, 2979, 3393, 3235, 3199, 3128, 3542, 3543, # Jr dev + confirmed
+    3350, 3161, 3051, 3349, 3242, 3348, 3353, 3390,                         # jr dev - confirmed
+    2315, 3367, 2461,                                                       # removed in round 2 04.23
+
+   # JR QE
+    2794, 3403, 2802, 3002,                         # jr qe approved
+   
+   # JR DevOps    
+   3196,    # outlier and no longer in Jalasoft
+   
+   # JR INFODEV    
+   #3068, # jr infodev
+
+   # staff DEV
+   2829, 2573, 2355, 2070, 2035, 2148, 2759, 2012, 2991, 1924, 1434, # staff dev - approved
+   2177, 2153, 1910, 1526, 1844, 1336,                               # removed in round 2 04.23
+
+   # STAFF AUTOMATION
+    1335, 2129, 2308, 1824, 3003, 1475, 1911,           # staff auto approved
+
+   # STAFF QE
+     3071, 2531, 1824, 2387, 1836, 1543, 1310, 2197, 1691, 1879, 3041, 2341, # STAFF QE - Approved
+
+   # STAFF DEVOPS
+    #3323, 
+   
+    # Sr AUTO
+    1646,      # Sr Auto - approved
+   
+    # Sr QE
+     1730, 1758, 1502, 1362, 1542, 1492, 1724, 1382, # SR QE - approved
+
+    # SENIOR DEV
+    1606, 1351        # Sr Dev - approved
+  )
+
+  # remove outliers
+  ref.dat <- ref.dat[!ref.dat$ID %in% c(outlier.list),]
+  
+  return(ref.dat[order(ref.dat$Dept),])
+}
+Payroll.2022<- Load_Reference_Data()
+
+# Load 2023 payroll data
+Bol.Payroll <- read_csv(Budget.File.Bol)
+Lat.Payroll <- read_csv(Budget.File.Lat)
+Eng.Payroll <- read_csv(Budget.File.Eng)
+
+# create static salary bands 
+Create_Salary_Bands <- function(){
+# create salary band data points min, q1, q2,q3, max so that they dont have to be redrawn every time
+
+  # create automation 2022 band
+  dept.2022 <- Payroll.2022 %>% filter(Dept %in% "Automation")
+  jr.2022 <- dept.2022 %>% filter(Level %in% "Junior")  %>%  select(TotalComp)
+  staff.2022 <- dept.2022  %>%  filter(Level %in% "Staff")  %>%  select(TotalComp)
+  sr.2022 <- dept.2022  %>%  filter(Level %in% "Senior")  %>%  select(TotalComp)
+  jr.2022 <- boxplot.stats(jr.2022$TotalComp)
+  staff.2022 <- boxplot.stats(staff.2022$TotalComp)
+  sr.2022 <- boxplot.stats(sr.2022$TotalComp)
+
+  AutoSalaryBands.2022 <- data.frame(
+    Dept  = c("Automation","Automation","Automation"),
+    Level = c("Junior","Staff","Senior"),
+    Band  = c("2022","2022","2022"),
+    min   = c(jr.2022$stats[1],staff.2022$stats[1],sr.2022$stats[1]),
+    low   = c(jr.2022$stats[2],staff.2022$stats[2],sr.2022$stats[2]),
+    mid   = c(jr.2022$stats[3],staff.2022$stats[3],sr.2022$stats[3]),
+    top   = c(jr.2022$stats[4],staff.2022$stats[4],sr.2022$stats[4]),
+    max   = c(jr.2022$stats[5],staff.2022$stats[5],sr.2022$stats[5])
+  )
+
+  # create dev 2022 band
+  dept.2022 <- Payroll.2022  %>%  filter(Dept %in% "DEV")
+  jr.2022 <- dept.2022  %>%  filter(Level %in% "Junior")  %>%  select(TotalComp)
+  staff.2022 <- dept.2022  %>%  filter(Level %in% "Staff")  %>%  select(TotalComp)
+  sr.2022 <- dept.2022  %>%  filter(Level %in% "Senior")  %>%  select(TotalComp)
+  jr.2022 <- boxplot.stats(jr.2022$TotalComp)
+  staff.2022 <- boxplot.stats(staff.2022$TotalComp)
+  sr.2022 <- boxplot.stats(sr.2022$TotalComp)
+
+  DevSalaryBands.2022 <- data.frame(
+    Dept  = c("DEV","DEV","DEV"),
+    Level = c("Junior","Staff","Senior"),
+    Band  = c("2022","2022","2022"),
+    min   = c(jr.2022$stats[1],staff.2022$stats[1],sr.2022$stats[1]),
+    low   = c(jr.2022$stats[2],staff.2022$stats[2],sr.2022$stats[2]),
+    mid   = c(jr.2022$stats[3],staff.2022$stats[3],sr.2022$stats[3]),
+    top   = c(jr.2022$stats[4],staff.2022$stats[4],sr.2022$stats[4]),
+    max   = c(jr.2022$stats[5],staff.2022$stats[5],sr.2022$stats[5])
+  )
+
+  # create dev 2022 band
+  dept.2022 <- Payroll.2022  %>%  filter(Dept %in% "DEV")
+  jr.2022 <- dept.2022  %>%  filter(Level %in% "Junior")  %>%  select(TotalComp)
+  staff.2022 <- dept.2022  %>%  filter(Level %in% "Staff")  %>%  select(TotalComp)
+  sr.2022 <- dept.2022  %>%  filter(Level %in% "Senior")  %>%  select(TotalComp)
+  jr.arch.2022 <- dept.2022  %>%  filter(Level %in% "Junior Architect")  %>%  select(TotalComp)
+  jr.2022 <- boxplot.stats(jr.2022$TotalComp)
+  staff.2022 <- boxplot.stats(staff.2022$TotalComp)
+  sr.2022 <- boxplot.stats(sr.2022$TotalComp)
+  jr.arch.2022 <- boxplot.stats(jr.arch.2022$TotalComp)
+
+  DevSalaryBands.2022 <- data.frame(
+    Dept  = c("DEV","DEV","DEV","DEV"),
+    Level = c("Junior","Staff","Senior","Junior Architect"),
+    Band  = c("2022","2022","2022","2022"),
+    min   = c(jr.2022$stats[1],staff.2022$stats[1],sr.2022$stats[1],jr.arch.2022$stats[1]),
+    low   = c(jr.2022$stats[2],staff.2022$stats[2],sr.2022$stats[2],jr.arch.2022$stats[2]),
+    mid   = c(jr.2022$stats[3],staff.2022$stats[3],sr.2022$stats[3],jr.arch.2022$stats[3]),
+    top   = c(jr.2022$stats[4],staff.2022$stats[4],sr.2022$stats[4],jr.arch.2022$stats[4]),
+    max   = c(jr.2022$stats[5],staff.2022$stats[5],sr.2022$stats[5],jr.arch.2022$stats[5])
+  )
+
+  # create DevOps 2022 band
+  dept.2022 <- Payroll.2022  %>%  filter(Dept %in% "DevOps")
+  jr.2022 <- dept.2022 %>% filter(Level %in% "Junior")  %>%  select(TotalComp)
+  staff.2022 <- dept.2022  %>%  filter(Level %in% "Staff")  %>%  select(TotalComp)
+  sr.2022 <- dept.2022  %>%  filter(Level %in% "Senior")  %>%  select(TotalComp)
+  jr.2022 <- boxplot.stats(jr.2022$TotalComp)
+  staff.2022 <- boxplot.stats(staff.2022$TotalComp)
+  sr.2022 <- boxplot.stats(sr.2022$TotalComp)
+
+  DevOpsSalaryBands.2022 <- data.frame(
+    Dept  = c("DevOps","DevOps","DevOps"),
+    Level = c("Junior","Staff","Senior"),
+    Band  = c("2022","2022","2022"),
+    min   = c(jr.2022$stats[1],staff.2022$stats[1],sr.2022$stats[1]),
+    low   = c(jr.2022$stats[2],staff.2022$stats[2],sr.2022$stats[2]),
+    mid   = c(jr.2022$stats[3],staff.2022$stats[3],sr.2022$stats[3]),
+    top   = c(jr.2022$stats[4],staff.2022$stats[4],sr.2022$stats[4]),
+    max   = c(jr.2022$stats[5],staff.2022$stats[5],sr.2022$stats[5])
+  )
+
+  # create INFO DEV 2022 band
+  dept.2022 <- Payroll.2022  %>%  filter(Dept %in% "INFO DEV")
+  jr.2022 <- dept.2022  %>%  filter(Level %in% "Junior")  %>%  select(TotalComp)
+  staff.2022 <- dept.2022  %>%  filter(Level %in% "Staff")  %>%  select(TotalComp)
+  sr.2022 <- dept.2022  %>%  filter(Level %in% "Senior")  %>%  select(TotalComp)
+  jr.2022 <- boxplot.stats(jr.2022$TotalComp)
+  staff.2022 <- boxplot.stats(staff.2022$TotalComp)
+  sr.2022 <- boxplot.stats(sr.2022$TotalComp)
+
+  InfoDevSalaryBands.2022 <- data.frame(
+    Dept  = c("INFO DEV","INFO DEV","INFO DEV"),
+    Level = c("Junior","Staff","Senior"),
+    Band  = c("2022","2022","2022"),
+    min   = c(jr.2022$stats[1],staff.2022$stats[1],sr.2022$stats[1]),
+    low   = c(jr.2022$stats[2],staff.2022$stats[2],sr.2022$stats[2]),
+    mid   = c(jr.2022$stats[3],staff.2022$stats[3],sr.2022$stats[3]),
+    top   = c(jr.2022$stats[4],staff.2022$stats[4],sr.2022$stats[4]),
+    max   = c(jr.2022$stats[5],staff.2022$stats[5],sr.2022$stats[5])
+  )
+
+  # create QE 2022 band
+  dept.2022 <- Payroll.2022  %>%  filter(Dept %in% "QE")
+  jr.2022 <- dept.2022  %>%  filter(Level %in% "Junior")  %>%  select(TotalComp)
+  staff.2022 <- dept.2022  %>%  filter(Level %in% "Staff")  %>%  select(TotalComp)
+  sr.2022 <- dept.2022  %>%  filter(Level %in% "Senior")  %>%  select(TotalComp)
+  jr.2022 <- boxplot.stats(jr.2022$TotalComp)
+  staff.2022 <- boxplot.stats(staff.2022$TotalComp)
+  sr.2022 <- boxplot.stats(sr.2022$TotalComp)
+
+  QESalaryBands.2022 <- data.frame(
+    Dept  = c("QE","QE","QE"),
+    Level = c("Junior","Staff","Senior"),
+    Band  = c("2022","2022","2022"),
+    min   = c(jr.2022$stats[1],staff.2022$stats[1],sr.2022$stats[1]),
+    low   = c(jr.2022$stats[2],staff.2022$stats[2],sr.2022$stats[2]),
+    mid   = c(jr.2022$stats[3],staff.2022$stats[3],sr.2022$stats[3]),
+    top   = c(jr.2022$stats[4],staff.2022$stats[4],sr.2022$stats[4]),
+    max   = c(jr.2022$stats[5],staff.2022$stats[5],sr.2022$stats[5])
+  )
+
+  # create UI/UX 2022 band
+  dept.2022 <- Payroll.2022  %>%  filter(Dept %in% "UI/UX")
+  jr.2022 <- dept.2022  %>%  filter(Level %in% "Junior")  %>%  select(TotalComp)
+  staff.2022 <- dept.2022  %>%  filter(Level %in% "Staff")  %>%  select(TotalComp)
+  sr.2022 <- dept.2022  %>%  filter(Level %in% "Senior")  %>%  select(TotalComp)
+  jr.2022 <- boxplot.stats(jr.2022$TotalComp)
+  staff.2022 <- boxplot.stats(staff.2022$TotalComp)
+  sr.2022 <- boxplot.stats(sr.2022$TotalComp)
+
+  UI.UXSalaryBands.2022 <- data.frame(
+    Dept  = c("UI/UX","UI/UX","UI/UX"),
+    Level = c("Junior","Staff","Senior"),
+    Band  = c("2022","2022","2022"),
+    min   = c(jr.2022$stats[1],staff.2022$stats[1],sr.2022$stats[1]),
+    low   = c(jr.2022$stats[2],staff.2022$stats[2],sr.2022$stats[2]),
+    mid   = c(jr.2022$stats[3],staff.2022$stats[3],sr.2022$stats[3]),
+    top   = c(jr.2022$stats[4],staff.2022$stats[4],sr.2022$stats[4]),
+    max   = c(jr.2022$stats[5],staff.2022$stats[5],sr.2022$stats[5])
+  )
+
+  # create Management 2022 band
+  dept.2022 <- Payroll.2022  %>%  filter(Dept %in% "Management")
+  jr.2022 <- dept.2022  %>%  filter(Level %in% "Junior Core Manager")  %>%  select(TotalComp)
+  staff.2022 <- dept.2022  %>%  filter(Level %in% "Core Manager")  %>%  select(TotalComp)
+  sr.2022 <- dept.2022  %>%  filter(Level %in% "Senior Core Manager")  %>%  select(TotalComp)
+  jr.2022 <- boxplot.stats(jr.2022$TotalComp)
+  staff.2022 <- boxplot.stats(staff.2022$TotalComp)
+  sr.2022 <- boxplot.stats(sr.2022$TotalComp)
+
+  MgtSalaryBands.2022 <- data.frame(
+    Dept  = c("Management","Management","Management"),
+    Level = c("Junior Core Manager","Core Manager","Senior Core Manager"),
+    Band  = c("2022","2022","2022"),
+    min   = c(jr.2022$stats[1],staff.2022$stats[1],sr.2022$stats[1]),
+    low   = c(jr.2022$stats[2],staff.2022$stats[2],sr.2022$stats[2]),
+    mid   = c(jr.2022$stats[3],staff.2022$stats[3],sr.2022$stats[3]),
+    top   = c(jr.2022$stats[4],staff.2022$stats[4],sr.2022$stats[4]),
+    max   = c(jr.2022$stats[5],staff.2022$stats[5],sr.2022$stats[5])
+  )
+
+  Bands.2022 <- rbind(AutoSalaryBands.2022,DevSalaryBands.2022,DevOpsSalaryBands.2022,
+               InfoDevSalaryBands.2022,QESalaryBands.2022,UI.UXSalaryBands.2022,
+               MgtSalaryBands.2022)
+
+  AutoSalaryBands.Target <- data.frame(
+    Dept  = c("Automation","Automation","Automation"),
+    Level = c("Junior","Staff","Senior"),
+    Band  = c("Target","Target","Target"),
+    min   = c( 781,1137,2656),
+    low   = c( 948,1557,2724),
+    mid   = c( 973,1905,3131),
+    top   = c(1064,2112,3488),
+    max   = c(1130,2467,3539)
+  )
+
+  DevSalaryBands.Target <- data.frame(
+    Dept  = c("DEV","DEV","DEV"),
+    Level = c("Junior","Staff","Senior"),
+    Band  = c("Target","Target","Target"),
+    min   = c( 898,1301,3173),  # corrected Sr Dev band 
+    low   = c(1053,1760,3256),  # according to TC 138 (git)
+    mid   = c(1094,1965,3709),
+    top   = c(1201,2227,4211),
+    max   = c(1390,2911,4876)
+  )
+
+  DevOpsSalaryBands.Target <- data.frame(
+    Dept  = c("DevOps","DevOps","DevOps"),
+    Level = c("Junior","Staff","Senior"),
+    Band  = c("Target","Target","Target"),
+    min   = c(1021,1568,NA),
+    low   = c(1067,2236,NA),
+    mid   = c(1145,2453,NA),
+    top   = c(1341,2701,NA),
+    max   = c(1511,2850,NA)
+  )
+
+  InfoDevSalaryBands.Target <- data.frame(
+    Dept  = c("INFO DEV","INFO DEV","INFO DEV"),
+    Level = c("Junior","Staff","Senior"),
+    Band  = c("Target","Target","Target"),
+    min   = c(954,1949,NA),
+    low   = c(954,1949,NA),
+    mid   = c(1047,2141,NA),
+    top   = c(1780,2333,NA),
+    max   = c(1780,2333,NA)
+  )
+
+  QESalaryBands.Target <- data.frame(
+    Dept  = c("QE","QE","QE"),
+    Level = c("Junior","Staff","Senior"),
+    Band  = c("Target","Target","Target"),
+    min   = c( 729,1145,2674),  # modified Jr band parameters according to TC 141
+    low   = c( 856,1480,2769),  # modified Staff band parameters according to TC 141
+    mid   = c( 933,1624,2890),  # modified Senior band parameters according to TC 141
+    top   = c(1011,1975,2995),
+    max   = c(1107,2478,3112)
+  )
+  
+  UI.UXSalaryBands.Target <- data.frame(
+    Dept  = c("UI/UX","UI/UX","UI/UX"),
+    Level = c("Junior","Staff","Senior"),
+    Band  = c("Target","Target","Target"),
+    min   = c(NA,1895,2778),
+    low   = c(NA,1895,2778),
+    mid   = c(NA,1927,2778),
+    top   = c(NA,1958,2778),
+    max   = c(NA,1958,2778)
+  )
+
+  MgtSalaryBands.Target <- data.frame(
+    Dept  = c("Management","Management","Management"),
+    Level = c("Junior Core Manager","Core Manager","Senior Core Manager"),
+    Band  = c("Target","Target","Target"),
+    min   = c(3049,3454,NA),
+    low   = c(3058,3455,NA),
+    mid   = c(3219,3580,NA),
+    top   = c(3388,3669,NA),
+    max   = c(3400,3827,NA)
+  )
+
+  Bands.Target <- rbind(AutoSalaryBands.Target,DevSalaryBands.Target,DevOpsSalaryBands.Target,
+                        InfoDevSalaryBands.Target,QESalaryBands.Target,QESalaryBands.Target,
+                        UI.UXSalaryBands.Target,MgtSalaryBands.Target)
+
+  AutoSalaryBands.Market <- data.frame(
+    Dept  = c("Automation","Automation","Automation"),
+    Level = c("Junior","Staff","Senior"),
+    Band  = c("Market","Market","Market"),
+    min   = c(NA,1987,2711),
+    low   = c(NA,1987,2711),
+    mid   = c(NA,2252,2977),
+    top   = c(NA,2423,3169),
+    max   = c(NA,2423,3169)
+  )
+
+  DevSalaryBands.Market <- data.frame(
+    Dept  = c("DEV","DEV","DEV"),
+    Level = c("Junior","Staff","Senior"),
+    Band  = c("Market","Market","Market"),
+    min   = c(NA,2268,3954),
+    low   = c(NA,2268,3954),
+    mid   = c(NA,2577,4605),
+    top   = c(NA,2776,5075),
+    max   = c(NA,2776,5075)
+  )
+
+  DevOpsSalaryBands.Market <- data.frame(
+    Dept  = c("DevOps","DevOps","DevOps"),
+    Level = c("Junior","Staff","Senior"),
+    Band  = c("Market","Market","Market"),
+    min   = c(NA,NA,NA),
+    low   = c(NA,NA,NA),
+    mid   = c(NA,NA,NA),
+    top   = c(NA,NA,NA),
+    max   = c(NA,NA,NA)
+  )
+
+  InfoDevSalaryBands.Market <- data.frame(
+    Dept  = c("INFO DEV","INFO DEV","INFO DEV"),
+    Level = c("Junior","Staff","Senior"),
+    Band  = c("Market","Market","Market"),
+    min   = c(NA,NA,NA),
+    low   = c(NA,NA,NA),
+    mid   = c(NA,NA,NA),
+    top   = c(NA,NA,NA),
+    max   = c(NA,NA,NA)
+  )
+
+  QESalaryBands.Market <- data.frame(
+    Dept  = c("QE","QE","QE"),
+    Level = c("Junior","Staff","Senior"),
+    Band  = c("Market","Market","Market"),
+    min   = c(NA,1812,2700),  # changed Sr Band by criteria with Silvia Valencia
+    low   = c(NA,1812,2700),
+    mid   = c(NA,1977,2890),
+    top   = c(NA,2084,3209),
+    max   = c(NA,2084,3209)
+  )
+
+  UI.UXSalaryBands.Market <- data.frame(
+    Dept  = c("UI/UX","UI/UX","UI/UX"),
+    Level = c("Junior","Staff","Senior"),
+    Band  = c("Market","Market","Market"),
+    min   = c(NA,NA,NA),
+    low   = c(NA,NA,NA),
+    mid   = c(NA,NA,NA),
+    top   = c(NA,NA,NA),
+    max   = c(NA,NA,NA)
+  )
+
+  MgtSalaryBands.Market <- data.frame(
+    Dept  = c("Management","Management","Management"),
+    Level = c("Junior Core Manager","Core Manager","Senior Core Manager"),
+    Band  = c("Market","Market","Market"),
+    min   = c(NA,NA,NA),
+    low   = c(NA,NA,NA),
+    mid   = c(NA,NA,NA),
+    top   = c(NA,NA,NA),
+    max   = c(NA,NA,NA)
+  )
+
+  Bands.Market <- rbind(AutoSalaryBands.Market,DevSalaryBands.Market,DevOpsSalaryBands.Market,
+                        InfoDevSalaryBands.Market,QESalaryBands.Market,QESalaryBands.Market,
+                        UI.UXSalaryBands.Market,MgtSalaryBands.Market)
+
+  Bands<-rbind(Bands.2022,Bands.Target,Bands.Market)
+  Bands$Band <- factor(Bands$Band, levels = curve_category_order, ordered = TRUE)
+
+  return(Bands)
+}
+Salary.Bands <- Create_Salary_Bands()
+
+# Load estimated 2023 raises 360/prom for Budget tracking data
+Get.Estimated.360.Prom.Budget <- function(){
+  # get the estimated 360/prom raises per unit 
+  #rpu <- read.csv(Estimated.Raises) # read raises per unit
+  rpu <- read_csv(Estimated.Raises) # read raises per unit
+  
+  return(rpu)
+}
+Raises.Summary.per.Unit <- Get.Estimated.360.Prom.Budget()
+
+# Load dataframe with dept level and target & market curve parameters + min max curve limits
+Load_Curve_Specs <- function(){
+  # read target and market curve specs
+  # need to put the filename elsewhere
+  eqt <- read_csv("Curve.Specs.csv")
+  eqt <- as.data.frame(eqt)
+  row.names(eqt) <- eqt[,1] # asign row names using first column
+  eqt <- eqt[,-1]           # delete row names first column 
+  return(eqt)
+}
+EQT <- Load_Curve_Specs()
+
+Load_Overrides_DF <- function(){
+  intervalforMonths <- 30
+  Override <- c("Basic", "Risk","TotalComp", "NetPay", 
+                "TotalCost", "TG","Inc.360", "B.BSU", "B.City",
+                "Client", "B.ENG", "B.Lead", "Inc.Prom", "Tot.Seniority")
+  Code <- c("Basic", "Risk","TotalComp", "NetPay", 
+                "TotalCost", "TG","360", "BSU", "City",
+                "Client", "ENG", "Lead", "Promo", "Seniority")
+  Index <- c(48,49,50,51,52,43,30,37,40,39,38,36,31,26)
+  StartAt <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+  Changed <- c(TRUE,TRUE,TRUE,TRUE,TRUE,TRUE,
+               FALSE,FALSE,FALSE,FALSE,FALSE,FALSE,FALSE,FALSE)
+  Value <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+  
+  OverrideDF <- data.frame(Override, Code, Index, StartAt, Changed, Value)
+  OverrideDF$StartAt <- OverrideDF$Index - intervalforMonths
+  
+  return(OverrideDF)
+}
+Overrides_DF <- Load_Overrides_DF()
+
+```
+
+```{css my-content, echo = FALSE}
+/*.chart-title { # modify styles for chart titles
+    font-family: "Arial", serif;
+    font-weight: bold;
+    font-size: 20px;
+    color:steelblue; 
+} */
+```
+
+```{r function-definitions}
+# Function Definitions
+get_sel_month_df <- function(Sel_Month,Payroll){
+  
+ # here the easy way is to partially match column names with the selected month but I assume that doing this makes the
+ # code run much slower.... so therefore, we will use the same approach as the former version: by col number
+ # here we could do some error checking but it is not worth it because the function will NOT be called with incorrect 
+ # data  
+  
+ Selected_DF <- switch(Sel_Month,   # select the columns for the "current" month (side bar)
+                "January"  = select(Payroll,1:5,9:22,  25: 52,383),
+                "February" = select(Payroll,1:5,9:22,  55: 82,383),
+                "March"    = select(Payroll,1:5,9:22,  85:112,383),
+                "April"    = select(Payroll,1:5,9:22, 115:142,383),
+                "May"      = select(Payroll,1:5,9:22, 145:172,383),
+                "June"     = select(Payroll,1:5,9:22, 175:202,383),
+                "July"     = select(Payroll,1:5,9:22, 205:232,383),
+                "August"   = select(Payroll,1:5,9:22, 235:262,383),
+                "September"= select(Payroll,1:5,9:22, 265:292,383),
+                "October"  = select(Payroll,1:5,9:22, 295:322,383),
+                "November" = select(Payroll,1:5,9:22, 325:352,383),
+                "December" = select(Payroll,1:5,9:22, 355:382,383)) %>% 
+          
+           # rename columns of the selected month 
+           setNames(., c("ID",	"Name",	"Active",	"Hire.Date", "Hire.End.Date",	#1:5
+                         "Aniversary", "Unit", "Dept", "Level", #9:12
+                         "Work.City", "Work.Country", "Is.Lead", "JCE", #13:16
+                         "Manager",	"Project", "Billing.Status", "Client", #17:20
+                         "E.Raise.360",	"E.Raise.Prom", # fist static part 21:22
+                         "JS.Seniority", "Tot.Seniority",	"WDays", "HB", "Inc.HB", #25:52
+                         "Inc.360", "Inc.Prom",	"Retroactive", "BJP",	#25:52
+                         "BA", "B.Aliment",	"B.Lead",	"B.BSU",	#25:52
+                         "B.ENG",	"B.Client",	"B.City",	"EST.WW",	#25:52
+                         "B.Other",	"TG", "PI",	"PA1", #25:52
+                         "PA2",	"AP",	"Basic",	"Risk", #25:52	
+                         "TotalComp",	"NetPay",	"TotalCost","X_ID")) %>% #25:52
+           
+          # relocate some columns for visibility
+           
+          #relocate(Client, .after = Full) %>%
+
+          relocate(Billing.Status, .after = JCE) %>%
+          relocate(Dept, .after = TotalCost) %>%
+          relocate(Level, .after = TotalCost) %>%
+          relocate(Is.Lead, .after = TotalCost) %>%
+          relocate(JCE, .after = TotalCost) %>%
+          relocate(Billing.Status, .after = TotalCost) %>%
+          relocate(Hire.End.Date, .after = TotalCost) %>%
+          relocate(WDays, .after = TotalCost) %>%
+          relocate(B.Aliment, .after = TotalCost) %>%
+          relocate(Retroactive, .after = TotalCost) %>%
+          relocate(EST.WW, .after = TotalCost) %>%
+          relocate(B.Other, .after = TotalCost) 
+    
+# now experimentally add an hyperlink to ID  
+# rename ID to RealID and hyperlink to ID so that no other changes are needed
+# by concatenating the ERP link and the employee internal ID (X_ID) 
+
+  Selected_DF$RealID <- Selected_DF$ID  
+  Selected_DF$ID <-  paste('<a  href="https://erp.jalasoft.local/web#id=',Selected_DF$X_ID,'&view_type=form&model=hr.employee&menu_id=133&action=131" target="_blank">',Selected_DF$ID,'</a>')
+   
+return(Selected_DF)  
+}    
+
+get_sel_month_df_To_Plot <- function(Sel_Month, Payroll, Curve){
+ return(switch(Sel_Month,   # select the columns for the "current" month (side bar)
+                "January"  = select(Payroll,1:2,9:12,  26, 48: 50),
+                "February" = select(Payroll,1:2,9:12,  56, 78: 80),
+                "March"    = select(Payroll,1:2,9:12,  86, 108:110),
+                "April"    = select(Payroll,1:2,9:12, 116, 138:140),
+                "May"      = select(Payroll,1:2,9:12, 146, 168:170),
+                "June"     = select(Payroll,1:2,9:12, 176, 198:200),
+                "July"     = select(Payroll,1:2,9:12, 206, 228:230),
+                "August"   = select(Payroll,1:2,9:12, 236, 258:260),
+                "September"= select(Payroll,1:2,9:12, 266, 288:290),
+                "October"  = select(Payroll,1:2,9:12, 296, 318:320),
+                "November" = select(Payroll,1:2,9:12, 326, 348:350),
+                "December" = select(Payroll,1:2,9:12, 356, 378:380)) %>% 
+          
+           # rename columns of the selected month 
+           setNames(., c("ID",	"Name",		
+                         "Aniversary", "Unit", "Dept", "Level",
+                          # fist static part
+                         "Tot.Seniority",	
+                         "Basic",	"Risk",	"TotalComp")) %>% 
+            dplyr::mutate(Total = if(Curve %in% "Basic")
+                             {Basic} else
+                             {TotalComp}))
+}    
+
+get_sel_month_Totals <- function(Sel_Month,Payroll, Prefix){
+  
+ # 
+  
+ return(switch(Sel_Month,   # select the columns for the "current" month (side bar)
+                "January"  = select(Payroll,1, 48: 52),
+                "February" = select(Payroll,1, 78: 82),
+                "March"    = select(Payroll,1, 108:112),
+                "April"    = select(Payroll,1, 138:142),
+                "May"      = select(Payroll,1, 168:172),
+                "June"     = select(Payroll,1, 198:202),
+                "July"     = select(Payroll,1, 228:232),
+                "August"   = select(Payroll,1, 258:262),
+                "September"= select(Payroll,1, 288:292),
+                "October"  = select(Payroll,1, 318:322),
+                "November" = select(Payroll,1, 348:352),
+                "December" = select(Payroll,1, 378:382)) %>% 
+          
+           # rename columns of the selected month 
+           setNames(., c(	paste(Prefix,".ID"), paste(Prefix,".Basic"),	paste(Prefix,".Risk"),	paste(Prefix,".TotalComp"), paste(Prefix, ".NetPay"), paste(Prefix,".TotalCost")))
+           
+          ) #%>%
+} 
+
+Get.360.Estimated.And.Executed.Budget <- function(exec.raises,estm.raises){ 
+  # summarize the unit 360 raise budgets
+  raises<- data.frame(Month=mon_lvls,
+                      E.Inc.360=t(summarise(estm.raises,across(Jan.360:Dec.360,sum))),
+                      X.Inc.360=t(summarise(exec.raises,across(Jan.360:Dec.360,sum))))
+  raises$Inc.360.Dif <- raises$E.Inc.360 - raises$X.Inc.360
+  raises$Month <- ordered(raises$Month, levels = mon_lvls)
+  return(raises)
+}
+
+Get.Prom.Estimated.And.Executed.Budget <- function(exec.raises,estm.raises){ 
+  # summarize the unit 360 raise budgets
+  raises<- data.frame(Month=mon_lvls,
+                      E.Inc.Prom=t(summarise(estm.raises,across(Jan.Prom:Dec.Prom,sum))),
+                      X.Inc.Prom=t(summarise(exec.raises,across(Jan.Prom:Dec.Prom,sum))))
+  raises$Inc.Prom.Dif <- raises$E.Inc.Prom - raises$X.Inc.Prom
+  raises$Month <- ordered(raises$Month, levels = mon_lvls)
+  return(raises)
+}
+
+Set.To.Empty <- function(Empty.Eng){
+  Empty.Eng[1,1] <- 0 # set ID to 0 so we know this engineer does not exist
+  Empty.Eng[1,2] <- "Jhon Doe" # set Name
+  # Empty.Eng[1,3] <- as.Date("01/01/22") # set Hire.Date to some date 
+  # Empty.Eng[1,4] <- as.Date("01/01/25") # set Hire.End.Date to some date 
+  # Empty.Eng[1,5] <- 0 # set JS.Seniority to some date 
+  # Empty.Eng[1,6] <- "January" # set Aniversary to some date 
+  # Empty.Eng[1,7] <- "Unit SES" # set Unit to some date 
+  # 
+  # Empty.Eng[1,8]  <- "DEV"  # Set Dept
+  # Empty.Eng[1,9]  <- "Staff"  # Level
+  # Empty.Eng[1,10] <- NA # Set City
+  # Empty.Eng[1,11] <- "NOT JCE" # Set JCE
+  # 
+    
+  Empty.Eng[1,23:379] <- 0
+  
+ #"Project","Client",
+  #                    "Tot.Seniority", "HB", "Inc.HB", "BJP", "BA", "Inc.BA.SMN", "Inc.BA.Ant",
+#                      "Inc.360", "Inc.Prom",	"B.Lead", "B.BSU", "B.Client", "B.ENG",	"B.City",
+#                    "TG",	"Jala.Bonus", "Basic", "Risk.Bonus", "Full","Avg.JB"
+  
+  
+  return(Empty.Eng)
+} 
+
+Get.Single.Row <- function(Full.Payroll.Row,Currency="USD"){
+  # receive a single row and return a row of a single payroll item in all 12 months
+  Single.Row<-subset(Full.Payroll.Row,select=c(1,35,65,95,125,155,185))
+  return(Single.Row)
+}
+
+GetOverrideValues <- function(BasicoGanado,
+                      Risk,
+                      TotalComp,
+                      NetPay,
+                      TotalCost,
+                      TotalGanado){
+  Overrides_DF$Value <- 0
+  Overrides_DF[Overrides_DF$Code=="Basic",]$Value <- BasicoGanado #ok
+  Overrides_DF[Overrides_DF$Code=="Risk",]$Value <- Risk
+  Overrides_DF[Overrides_DF$Code=="TotalComp",]$Value <- TotalComp #ok
+  Overrides_DF[Overrides_DF$Code=="NetPay",]$Value <- NetPay
+  Overrides_DF[Overrides_DF$Code=="TotalCost",]$Value <- TotalCost
+  Overrides_DF[Overrides_DF$Code=="TG",]$Value <- TotalGanado
+  
+  if(!is.na(input$raiseSelectionOverride1) & 
+     input$raiseSelectionOverride1 >= 0 & 
+     input$raiseSelection1 != "Seniority"){
+    Overrides_DF[Overrides_DF$Code==input$raiseSelection1,]$Value <- 
+    input$raiseSelectionOverride1
+    Overrides_DF[Overrides_DF$Code==input$raiseSelection1,]$Changed <- TRUE
+  }
+  
+  if(!is.na(input$raiseSelectionOverride2) & 
+          input$raiseSelectionOverride2 >=0  & 
+          input$raiseSelection2 != "Seniority"){
+    Overrides_DF[Overrides_DF$Code==input$raiseSelection2,]$Value <-
+    input$raiseSelectionOverride2
+    Overrides_DF[Overrides_DF$Code==input$raiseSelection2,]$Changed <- TRUE
+  }
+  
+  if(!is.na(input$raiseSelectionOverride3) & 
+          input$raiseSelectionOverride3 >=0 & input$raiseSelection3 != "Seniority"){
+    Overrides_DF[Overrides_DF$Code==input$raiseSelection3,]$Value <-
+    input$raiseSelectionOverride3
+    Overrides_DF[Overrides_DF$Code==input$raiseSelection3,]$Changed <- TRUE
+  }
+  
+  return(Overrides_DF)
+}
+
+isAnyOverrideValue <- function(){
+  if (is.na(input$raiseSelectionOverride1) &
+      is.na(input$raiseSelectionOverride2) &
+      is.na(input$raiseSelectionOverride3)) {
+    return(FALSE)
+  }
+  else{
+    return(TRUE)  
+  }
+  
+}
+
+GetColumnName <- function(base, monthIndex){
+  colName <- paste0(base, ".", mon_lvls[monthIndex])
+  return(colName)
+}
+
+AddNewValuesForTotals <- function(Full.Payroll.Row, monthIndex){
+  # PR$Basic <- PR$HB + PR$BJP + PR$Inc.360 + PR$Inc.Prom + PR$BA + PR$Inc.HB + PR$B.Other
+  Full.Payroll.Row[1,GetColumnName("Basic", monthIndex)] <- 
+    Full.Payroll.Row[1, GetColumnName("HB", monthIndex)] + 
+    Full.Payroll.Row[1, GetColumnName("BJP", monthIndex)] + 
+    Full.Payroll.Row[1, GetColumnName("Inc.360", monthIndex)] +
+    Full.Payroll.Row[1, GetColumnName("Inc.Prom", monthIndex)] + 
+    Full.Payroll.Row[1, GetColumnName("BA", monthIndex)] +
+    Full.Payroll.Row[1, GetColumnName("Inc.HB", monthIndex)] + 
+    Full.Payroll.Row[1, GetColumnName("B.Other", monthIndex)]
+  
+  # PR$Risk <- PR$B.BSU + PR$B.Client + PR$B.ENG 
+  Full.Payroll.Row[1,GetColumnName("Risk", monthIndex)] <- 
+    Full.Payroll.Row[1, GetColumnName("B.BSU", monthIndex)] + 
+    Full.Payroll.Row[1, GetColumnName("B.Client", monthIndex)] + 
+    Full.Payroll.Row[1, GetColumnName("B.ENG", monthIndex)]
+          
+  # PR$TotalComp <- PR$Basic + PR$Risk +PR$PI + PR$PA1 
+  Full.Payroll.Row[1,GetColumnName("TotalComp", monthIndex)] <- 
+    Full.Payroll.Row[1, GetColumnName("Basic", monthIndex)] + 
+    Full.Payroll.Row[1, GetColumnName("Risk", monthIndex)] + 
+    Full.Payroll.Row[1, GetColumnName("PI", monthIndex)] + 
+    Full.Payroll.Row[1, GetColumnName("PA1", monthIndex)]
+  
+  # PR$NetPay <- PR$TotalComp + PR$B.Lead + PR$B.City 
+  Full.Payroll.Row[1,GetColumnName("NetPay", monthIndex)] <- 
+    Full.Payroll.Row[1, GetColumnName("TotalComp", monthIndex)] + 
+    Full.Payroll.Row[1, GetColumnName("B.Lead", monthIndex)] + 
+    Full.Payroll.Row[1, GetColumnName("B.City", monthIndex)]
+          
+  # PR$TotalCost <- PR$NetPay + PR$AP
+  Full.Payroll.Row[1,GetColumnName("TotalCost", monthIndex)] <- 
+    Full.Payroll.Row[1, GetColumnName("NetPay", monthIndex)] + 
+    Full.Payroll.Row[1, GetColumnName("AP", monthIndex)]
+          
+  # PR$TG <- PR$HB + PR$BJP + PR$Inc.360 + PR$Inc.Prom + PR$BA + PR$B.Lead + PR$B.BSU + PR$B.ENG + PR$B.Client + PR$B.City + PR$Inc.HB
+  Full.Payroll.Row[1,GetColumnName("TG", monthIndex)] <- 
+    Full.Payroll.Row[1, GetColumnName("HB", monthIndex)] + 
+    Full.Payroll.Row[1, GetColumnName("BJP", monthIndex)] + 
+    Full.Payroll.Row[1, GetColumnName("Inc.360", monthIndex)] + 
+    Full.Payroll.Row[1, GetColumnName("Inc.Prom", monthIndex)] + 
+    Full.Payroll.Row[1, GetColumnName("BA", monthIndex)] + 
+    Full.Payroll.Row[1, GetColumnName("B.Lead", monthIndex)] + 
+    Full.Payroll.Row[1, GetColumnName("B.BSU", monthIndex)] + 
+    Full.Payroll.Row[1, GetColumnName("B.ENG", monthIndex)] + 
+    Full.Payroll.Row[1, GetColumnName("B.Client", monthIndex)] + 
+    Full.Payroll.Row[1, GetColumnName("B.City", monthIndex)] + 
+    Full.Payroll.Row[1, GetColumnName("Inc.HB", monthIndex)]
+          
+  return(Full.Payroll.Row)
+}
+
+Get.Single.General <- function(Full.Payroll.Row, overridesToUpdate=NULL, 
+                               currentMonth=input$Sel_Month, Currency="USD"){
+  # receive a single row and convert it to a item vs month dataframe for row employee
+  # to speed this process, need to avoid any row/column calculations so provide fixed numbers
+  
+  # here we have the posibility of showing this table in a different currency USD by default 
+  if(Currency=="USD"){
+    factor<-1
+  } else if(Currency=="BOB"){
+    factor<-USD2BOB 
+  } else{
+    factor<-0
+  }
+  
+  if(length(input$table_rows_selected>0)) # prevent error when table is empty
+  { 
+    if (!is.null(overridesToUpdate)) {
+      sequenceMonth <- 30
+      monthIndex <- which(month_levels==currentMonth)
+      
+      for (monthIndex in monthIndex:12) {
+        
+        for (i in 1:nrow(overridesToUpdate)) {
+          Full.Payroll.Row[,overridesToUpdate[i,]$StartAt + 
+                             (sequenceMonth * monthIndex)] <- 
+            overridesToUpdate[i,]$Value
+        }
+        
+        Full.Payroll.Row <- AddNewValuesForTotals(Full.Payroll.Row, monthIndex)
+      }  
+    }
+    
+    sin.emp <- as.data.frame(t(Full.Payroll.Row[28:52]*factor)) # 25 cols  January
+    sin2.emp2 <- t(Full.Payroll.Row[,58:82]*factor)              # February
+    sin.emp <- cbind(sin.emp,sin2.emp2)
+    sin2.emp2 <- t(Full.Payroll.Row[,88:112]*factor)             # March
+    sin.emp <- cbind(sin.emp,sin2.emp2)
+    sin2.emp2 <- t(Full.Payroll.Row[,118:142]*factor)            # April
+    sin.emp <- cbind(sin.emp,sin2.emp2)
+    sin2.emp2 <- t(Full.Payroll.Row[,148:172]*factor)            # May
+    sin.emp <- cbind(sin.emp,sin2.emp2)
+    sin2.emp2 <- t(Full.Payroll.Row[,178:202]*factor)            # June
+    sin.emp <- cbind(sin.emp,sin2.emp2)
+    sin2.emp2 <- t(Full.Payroll.Row[,208:232]*factor)            # July
+    sin.emp <- cbind(sin.emp,sin2.emp2)
+    sin2.emp2 <- t(Full.Payroll.Row[,238:262]*factor)            # Aug
+    sin.emp <- cbind(sin.emp,sin2.emp2)
+    sin2.emp2 <- t(Full.Payroll.Row[,268:292]*factor)            # Sep
+    sin.emp <- cbind(sin.emp,sin2.emp2)
+    sin2.emp2 <- t(Full.Payroll.Row[,298:322]*factor)            # Oct
+    sin.emp <- cbind(sin.emp,sin2.emp2)
+    sin2.emp2 <- t(Full.Payroll.Row[,328:352]*factor)            # Nov
+    sin.emp <- cbind(sin.emp,sin2.emp2)
+    sin2.emp2 <- t(Full.Payroll.Row[,358:382]*factor)            # Dec
+    sin.emp <- cbind(sin.emp,sin2.emp2)
+    colnames(sin.emp) <- 
+      c("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")
+    rownames(sin.emp) <- 
+      c("HB", "Inc.HB", "Inc.360", "Inc.Prom",	"Retroactive", 	"BJP", 		"BA",	
+        "B.Aliment", "B.Lead",	"B.BSU",	"B.ENG",	"B.Client",	"B.City",	"EST.WW",	
+        "B.Other",	"TG",	"PI",	"PA1",	"PA2",	"AP",	"Basic",	"Risk",	"TotalComp",	"NetPay",	"TotalCost")
+    
+    sin.emp <- sin.emp %>% mutate(Total=rowSums(sin.emp[, 1:12]))
+    # sin.emp <- format(round(sin.emp[, 1:13], digits = 2), nsmall=2, big.mark=",")
+    sin.emp <- sin.emp %>% mutate(Group = "Payroll")
+    sin.emp[21:25,"Group"] <- "Totals"
+    sin.emp["TG", "Group"] <- "Totals"
+
+  return(sin.emp %>% arrange(desc(Group))) # return with only 2 significant decimal places
+  }
+}
+
+Get.Single.General.Totals <- function(Full.Payroll.Row, Currency="USD"){
+  if(Currency=="USD"){
+    factor<-1
+  } else if(Currency=="BOB"){
+    factor<-USD2BOB 
+  } else{
+    factor<-0
+  }
+  
+  if(length(input$table_rows_selected>0)) # prevent error when table is empty
+  { 
+    sin.emp <- as.data.frame(t(Full.Payroll.Row[28:52]*factor)) # 25 cols  January
+    sin2.emp2 <- t(Full.Payroll.Row[,78:82]*factor)              # February
+    sin.emp <- cbind(sin.emp,sin2.emp2)
+    sin2.emp2 <- t(Full.Payroll.Row[,108:112]*factor)             # March
+    sin.emp <- cbind(sin.emp,sin2.emp2)
+    sin2.emp2 <- t(Full.Payroll.Row[,138:142]*factor)            # April
+    sin.emp <- cbind(sin.emp,sin2.emp2)
+    sin2.emp2 <- t(Full.Payroll.Row[,168:172]*factor)            # May
+    sin.emp <- cbind(sin.emp,sin2.emp2)
+    sin2.emp2 <- t(Full.Payroll.Row[,198:202]*factor)            # June
+    sin.emp <- cbind(sin.emp,sin2.emp2)
+    sin2.emp2 <- t(Full.Payroll.Row[,228:232]*factor)            # July
+    sin.emp <- cbind(sin.emp,sin2.emp2)
+    sin2.emp2 <- t(Full.Payroll.Row[,258:262]*factor)            # Aug
+    sin.emp <- cbind(sin.emp,sin2.emp2)
+    sin2.emp2 <- t(Full.Payroll.Row[,288:292]*factor)            # Sep
+    sin.emp <- cbind(sin.emp,sin2.emp2)
+    sin2.emp2 <- t(Full.Payroll.Row[,318:322]*factor)            # Oct
+    sin.emp <- cbind(sin.emp,sin2.emp2)
+    sin2.emp2 <- t(Full.Payroll.Row[,348:352]*factor)            # Nov
+    sin.emp <- cbind(sin.emp,sin2.emp2)
+    sin2.emp2 <- t(Full.Payroll.Row[,378:382]*factor)            # Dec
+    sin.emp <- cbind(sin.emp,sin2.emp2)
+    colnames(sin.emp) <- 
+      c("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")
+    rownames(sin.emp) <- 
+      c("HB", "Inc.HB", "Inc.360", "Inc.Prom",	"Retroactive", 	"BJP", 		"BA",	
+        "B.Aliment", "B.Lead",	"B.BSU",	"B.ENG",	"B.Client",	"B.City",	"EST.WW",	
+        "B.Other",	"TG",	"PI",	"PA1",	"PA2",	"AP",	"Basic",	"Risk",	"TotalComp",	"NetPay",	"TotalCost")
+    
+    sin.emp <- sin.emp %>% mutate(Total=rowSums(sin.emp[, 1:12]))
+
+  return(sin.emp)
+  }
+}
+
+#### Create new salary bands data to be used as reference in summary ####
+
+CreateMarketSalaryBandsByDept <- function(department){
+  df <- NULL
+  interval_sequence <- 0.5
+  if(department =="Automation"){ # Refactored with EQT curve values and adjusted ranges
+    auto.junior <- data.frame(Dept="Automation",Level="Junior",Seniority=0,TotalComp=0) # No data
+    Seniority<-seq(2,20,interval_sequence)
+    auto.staff  <- data.frame(Dept="Automation",Level="Staff",Seniority,
+                              TotalComp = (EQT['Auto.Staff',]$A.Mkt * log(Seniority) +
+                                             EQT['Auto.Staff',]$B.Mkt))
+    Seniority<-seq(15,20,interval_sequence)
+    auto.senior <- data.frame(Dept="Automation",Level="Senior",Seniority,
+                              TotalComp = (EQT['Auto.Sr',]$A.Mkt * log(Seniority) +
+                                             EQT['Auto.Sr',]$B.Mkt))
+    df <- rbind(auto.junior,auto.staff,auto.senior)
+  }
+  else if(department =="DEV"){ # Refactored with EQT curve values and adjusted ranges
+    dev.junior <- data.frame(Dept="DEV",Level="Junior",Seniority=0,TotalComp=0) # No data
+    Seniority<-seq(2,23,interval_sequence)
+    dev.staff  <- data.frame(Dept="DEV",Level="Staff",Seniority,
+                             TotalComp = (EQT['Dev.Staff',]$A.Mkt * log(Seniority) +
+                                            EQT['Dev.Staff',]$B.Mkt))
+    Seniority<-seq(7,27,interval_sequence)
+    dev.senior <- data.frame(Dept="DEV",Level="Senior",Seniority,
+                           TotalComp = (EQT['Dev.Sr',]$A.Mkt * log(Seniority) +
+                                          EQT['Dev.Sr',]$B.Mkt))
+    df <- rbind(dev.junior,dev.staff,dev.senior)
+  }
+  else if(department =="DevOps"){
+    devops.jr <- data.frame(Dept="DevOps",Level="Junior",Seniority=0,TotalComp=0) # No data
+    devops.staff <- data.frame(Dept="DevOps",Level="Staff",Seniority=0,TotalComp=0) # No data
+    devops.sr <- data.frame(Dept="DevOps",Level="Senior",Seniority=0,TotalComp=0) # No data
+    df <- rbind(devops.jr, devops.staff, devops.sr)
+  }
+  else if(department =="INFO DEV"){
+    infodev.jr <- data.frame(Dept="INFO DEV",Level="Junior",Seniority=0,TotalComp=0) # No data
+    infodev.staff <- data.frame(Dept="INFO DEV",Level="Staff",Seniority=0,TotalComp=0) # No data
+    infodev.sr <- data.frame(Dept="INFO DEV",Level="Senior",Seniority=0,TotalComp=0) # No data
+    df <- rbind(infodev.jr, infodev.staff, infodev.sr)
+  }
+  else if(department =="QE"){ # Refactored with EQT curve values and adjusted ranges
+    qe.junior <- data.frame(Dept="QE",Level="Junior",Seniority=0,TotalComp=0) # No data
+    Seniority<-seq(2,22,interval_sequence)
+    qe.staff  <- data.frame(Dept="QE",Level="Staff",Seniority,
+                           TotalComp= (EQT['QE.Staff',]$A.Mkt * log(Seniority) +
+                                         EQT['QE.Staff',]$B.Mkt))
+    Seniority<-seq(12,20,interval_sequence)
+    qe.senior <- data.frame(Dept="QE",Level="Senior",Seniority,
+                            TotalComp = (EQT['QE.Sr',]$A.Mkt * log(Seniority) +
+                                           EQT['QE.Sr',]$B.Mkt))
+    df <- rbind(qe.junior, qe.staff, qe.senior)
+  }
+  else if(department =="UI/UX"){
+    uiux.jr <- data.frame(Dept="UI/UX",Level="Junior",Seniority=0,TotalComp=0) # No data
+    uiux.staff <- data.frame(Dept="UI/UX",Level="Staff",Seniority=0,TotalComp=0) # No data
+    uiux.sr <- data.frame(Dept="UI/UX",Level="Senior",Seniority=0,TotalComp=0) # No data
+    df <- rbind(uiux.jr, uiux.staff, uiux.sr)
+  }
+  else if(department =="Management"){
+    # these 0 value curves where missing and causing a bug with Mgt
+  # all dept and levels must have entries here even if the entries are 0
+    mgt.jr.core.mgt <- data.frame(Dept="Management",Level="Junior Core Manager",Seniority=0,TotalComp=0) # No data
+    mgt.core.mgt <- data.frame(Dept="Management",Level="Core Manager",Seniority=0,TotalComp=0) # No data
+    mgt.sr.core.mgt <- data.frame(Dept="Management",Level="Senior Core Manager",Seniority=0,TotalComp=0) # No data
+    df <- rbind(mgt.jr.core.mgt,mgt.core.mgt,mgt.sr.core.mgt)
+  }
+  return(df)
+}
+
+CreateTargetSalaryBandsByDept <- function(department){
+  df <- NULL
+  interval_sequence <- 0.5
+  if(department =="Automation"){# Refactored with EQT curve values and adjusted ranges
+    Seniority<-seq(1,5,interval_sequence)
+    auto.junior <- data.frame(Dept="Automation",Level="Junior",Seniority,
+                              TotalComp = (EQT['Auto.Jr',]$A.Tgt * log(Seniority) +
+                                             EQT['Auto.Jr',]$B.Tgt))
+    Seniority<-seq(2,20,interval_sequence)
+    auto.staff  <- data.frame(Dept="Automation",Level="Staff",Seniority,
+                              TotalComp = (EQT['Auto.Staff',]$A.Tgt * log(Seniority) +
+                                             EQT['Auto.Staff',]$B.Tgt))
+    Seniority<-seq(15,20,interval_sequence)
+    auto.senior <- data.frame(Dept="Automation",Level="Senior",Seniority,
+                              TotalComp = (EQT['Auto.Sr',]$A.Tgt * log(Seniority) +
+                                             EQT['Auto.Sr',]$B.Tgt))
+    df <- rbind(auto.junior,auto.staff,auto.senior)
+  }
+  else if(department =="DEV"){# Refactored with EQT curve values and adjusted ranges
+    Seniority<-seq(1,6,interval_sequence)
+    dev.junior <- data.frame(Dept="DEV",Level="Junior", Seniority,
+                             TotalComp = (EQT['Dev.Jr',]$A.Tgt * log(Seniority) +
+                                            EQT['Dev.Jr',]$B.Tgt))
+    Seniority<-seq(2,23,interval_sequence)
+    dev.staff  <- data.frame(Dept="DEV",Level="Staff",Seniority,
+                             TotalComp = (EQT['Dev.Staff',]$A.Tgt * log(Seniority) +
+                                            EQT['Dev.Staff',]$B.Tgt))
+    Seniority<-seq(7,27,interval_sequence)
+    dev.senior <- data.frame(Dept="DEV",Level="Senior",Seniority,
+                             TotalComp = (EQT['Dev.Sr',]$A.Tgt * log(Seniority) +
+                                            EQT['Dev.Sr',]$B.Tgt))
+   df <-  rbind(dev.junior,dev.staff,dev.senior)
+  }
+  else if(department =="DevOps"){# Refactored with EQT curve values and adjusted ranges
+    Seniority<-seq(1,10,interval_sequence)
+    devops.jr <- data.frame(Dept="DevOps",Level="Junior", Seniority,
+                            TotalComp = (EQT['DevOps.Jr',]$A.Tgt * log(Seniority) +
+                                           EQT['DevOps.Jr',]$B.Tgt))
+    Seniority<-seq(4,18,interval_sequence)
+    devops.staff <- data.frame(Dept="DevOps",Level="Staff", Seniority,
+                               TotalComp = (EQT['DevOps.Staff',]$A.Tgt * log(Seniority) +
+                                           EQT['DevOps.Staff',]$B.Tgt))
+    devops.sr <- data.frame(Dept="DevOps",Level="Senior",Seniority=0,TotalComp=0) # No data
+    df <- rbind(devops.jr, devops.staff, devops.sr)
+  }
+  else if(department =="INFO DEV"){# Refactored with EQT curve values and adjusted ranges
+    Seniority<-seq(1,5,interval_sequence)
+    infodev.jr <- data.frame(Dept="INFO DEV",Level="Junior", Seniority,
+                             TotalComp = (EQT['InfoDev.Jr',]$A.Tgt * log(Seniority) +
+                                           EQT['InfoDev.Jr',]$B.Tgt))
+    Seniority<-seq(2,8,interval_sequence)
+    infodev.staff <- data.frame(Dept="INFO DEV",Level="Staff", Seniority,
+                                TotalComp = (EQT['InfoDev.Staff',]$A.Tgt * log(Seniority) +
+                                           EQT['InfoDev.Staff',]$B.Tgt))
+    infodev.sr <- data.frame(Dept="INFO DEV",Level="Senior",Seniority=0,TotalComp=0) # No data
+    df <- rbind(infodev.jr, infodev.staff, infodev.sr)
+  }
+  else if(department =="QE"){# Refactored with EQT curve values and adjusted ranges
+    Seniority<-seq(1,6,interval_sequence)
+    qe.junior <- data.frame(Dept="QE",Level="Junior", Seniority,
+                            TotalComp = (EQT['QE.Jr',]$A.Tgt * log(Seniority) +
+                                            EQT['QE.Jr',]$B.Tgt))
+    Seniority<-seq(2,22,interval_sequence)
+    qe.staff  <- data.frame(Dept="QE",Level="Staff",Seniority,
+                            TotalComp = (EQT['QE.Staff',]$A.Tgt * log(Seniority) +
+                                            EQT['QE.Staff',]$B.Tgt))
+    Seniority<-seq(12,20,interval_sequence)
+    qe.senior <- data.frame(Dept="QE",Level="Senior",Seniority,
+                            TotalComp = (EQT['QE.Sr',]$A.Tgt * log(Seniority) +
+                                            EQT['QE.Sr',]$B.Tgt))
+    df <- rbind(qe.junior, qe.staff, qe.senior)
+  }
+  else if(department =="UI/UX"){# Refactored with EQT curve values and adjusted ranges
+    uiux.jr <- data.frame(Dept="UI/UX",Level="Junior",Seniority=0,TotalComp=0) # No data
+    Seniority<-seq(6,8,interval_sequence)
+    uiux.staff <- data.frame(Dept="UI/UX",Level="Staff", Seniority,
+                             TotalComp = (EQT['UiUx.Staff',]$A.Tgt * log(Seniority) +
+                                            EQT['UiUx.Staff',]$B.Tgt))
+    uiux.sr <- data.frame(Dept="UI/UX",Level="Senior",Seniority=0,TotalComp=0) # No data
+    df <- rbind(uiux.jr, uiux.staff, uiux.sr)
+  }
+  else if(department =="Management"){# Refactored with EQT curve values and adjusted ranges
+    # these 0 value curves where missing and causing a bug with Mgt
+  # all dept and levels must have entries here even if the entries are 0
+    Seniority<-seq(7,21,interval_sequence)
+    mgt.jr.core.mgt <- data.frame(Dept="Management",Level="Junior Core Manager",Seniority,
+                                  TotalComp = (EQT['Mgt.Jr',]$A.Tgt * log(Seniority) +
+                                                 EQT['Mgt.Jr',]$B.Tgt))
+    Seniority<-seq(10,25,interval_sequence)
+    mgt.core.mgt <- data.frame(Dept="Management",Level="Core Manager",Seniority,
+                               TotalComp = (EQT['Mgt.Core',]$A.Tgt * log(Seniority) +
+                                              EQT['Mgt.Core',]$B.Tgt))
+    mgt.sr.core.mgt <- data.frame(Dept="Management",Level="Senior Core Manager",Seniority=0,TotalComp=0) # No data
+    df <- rbind(mgt.jr.core.mgt,mgt.core.mgt,mgt.sr.core.mgt)
+  }
+  return(df)
+}
+#####
+
+Get_PIR_and_CompaRatio <- function(dept=NA,level=NA,Seniority=NA,TotalComp=NA){
+  # Calculate PIR and CompaRatio based on above parameters
+  value <- data.frame(pir=NA,cpr=NA)
+  if(dept=="Automation"){
+    if(level == "Junior"){
+      value$pir <- (EQT["Auto.Jr",]$A.Tgt*log(Seniority)+EQT["Auto.Jr",]$B.Tgt)
+      value$cpr <- (EQT["Auto.Jr",]$A.Mkt*log(Seniority)+EQT["Auto.Jr",]$B.Mkt)
+      return(TotalComp/value)
+    } else if(level=="Staff"){
+      value$pir <- (EQT["Auto.Staff",]$A.Tgt*log(Seniority)+EQT["Auto.Staff",]$B.Tgt)
+      value$cpr <- (EQT["Auto.Staff",]$A.Mkt*log(Seniority)+EQT["Auto.Staff",]$B.Mkt)
+      return(TotalComp/value)
+    } else if(level=="Senior"){
+      value$pir <- (EQT["Auto.Sr",]$A.Tgt*log(Seniority)+EQT["Auto.Sr",]$B.Tgt)
+      value$cpr <- (EQT["Auto.Sr",]$A.Mkt*log(Seniority)+EQT["Auto.Sr",]$B.Mkt)
+      return(TotalComp/value)
+    }
+  } else if (dept=="DEV"){
+    if(level == "Junior"){
+      value$pir <- (EQT["Dev.Jr",]$A.Tgt*log(Seniority)+EQT["Dev.Jr",]$B.Tgt)
+      value$cpr <- (EQT["Dev.Jr",]$A.Mkt*log(Seniority)+EQT["Dev.Jr",]$B.Mkt)
+      return(TotalComp/value)
+    } else if(level=="Staff"){
+      value$pir <- (EQT["Dev.Staff",]$A.Tgt*log(Seniority)+EQT["Dev.Staff",]$B.Tgt)
+      value$cpr <- (EQT["Dev.Staff",]$A.Mkt*log(Seniority)+EQT["Dev.Staff",]$B.Mkt)
+      return(TotalComp/value)
+    } else if(level=="Senior"){
+      value$pir <- (EQT["Dev.Sr",]$A.Tgt*log(Seniority)+EQT["Dev.Sr",]$B.Tgt)
+      value$cpr <- (EQT["Dev.Sr",]$A.Mkt*log(Seniority)+EQT["Dev.Sr",]$B.Mkt)
+      return(TotalComp/value)
+    }
+  } else if (dept=="DevOps"){
+    if(level == "Junior"){
+      value$pir <- (EQT["DevOps.Jr",]$A.Tgt*log(Seniority)+EQT["DevOps.Jr",]$B.Tgt)
+      value$cpr <- (EQT["DevOps.Jr",]$A.Mkt*log(Seniority)+EQT["DevOps.Jr",]$B.Mkt)
+      return(TotalComp/value)
+    } else if(level=="Staff"){
+      value$pir <- (EQT["DevOps.Staff",]$A.Tgt*log(Seniority)+EQT["DevOps.Staff",]$B.Tgt)
+      value$cpr <- (EQT["DevOps.Staff",]$A.Mkt*log(Seniority)+EQT["DevOps.Staff",]$B.Mkt)
+      return(TotalComp/value)
+    } else if(level=="Senior"){
+      value$pir <- (EQT["DevOps.Sr",]$A.Tgt*log(Seniority)+EQT["DevOps.Sr",]$B.Tgt)
+      value$cpr <- (EQT["DevOps.Sr",]$A.Mkt*log(Seniority)+EQT["DevOps.Sr",]$B.Mkt)      
+      return(TotalComp/value)
+    }
+  } else if (dept=="INFO DEV"){
+    if(level == "Junior"){
+      value$pir <- (EQT["InfoDev.Jr",]$A.Tgt*log(Seniority)+EQT["InfoDev.Jr",]$B.Tgt)
+      value$cpr <- (EQT["InfoDev.Jr",]$A.Mkt*log(Seniority)+EQT["InfoDev.Jr",]$B.Mkt)      
+      return(TotalComp/value)
+    } else if(level=="Staff"){
+      value$pir <- (EQT["InfoDev.Staff",]$A.Tgt*log(Seniority)+EQT["InfoDev.Staff",]$B.Tgt)
+      value$cpr <- (EQT["InfoDev.Staff",]$A.Mkt*log(Seniority)+EQT["InfoDev.Staff",]$B.Mkt)      
+      return(TotalComp/value)
+    } else if(level=="Senior"){
+      value$pir <- (EQT["InfoDev.Sr",]$A.Tgt*log(Seniority)+EQT["InfoDev.Sr",]$B.Tgt)
+      value$cpr <- (EQT["InfoDev.Sr",]$A.Mkt*log(Seniority)+EQT["InfoDev.Sr",]$B.Mkt)      
+      return(TotalComp/value)
+    }
+  } else if (dept=="QE"){
+    if(level == "Junior"){
+      value$pir <- (EQT["QE.Jr",]$A.Tgt*log(Seniority)+EQT["QE.Jr",]$B.Tgt)
+      value$cpr <- (EQT["QE.Jr",]$A.Mkt*log(Seniority)+EQT["QE.Jr",]$B.Mkt)      
+      return(TotalComp/value)
+    } else if(level=="Staff"){
+      value$pir <- (EQT["QE.Staff",]$A.Tgt*log(Seniority)+EQT["QE.Staff",]$B.Tgt)
+      value$cpr <- (EQT["QE.Staff",]$A.Mkt*log(Seniority)+EQT["QE.Staff",]$B.Mkt)      
+      return(TotalComp/value)
+    } else if(level=="Senior"){
+      value$pir <- (EQT["QE.Sr",]$A.Tgt*log(Seniority)+EQT["QE.Sr",]$B.Tgt)
+      value$cpr <- (EQT["QE.Sr",]$A.Mkt*log(Seniority)+EQT["QE.Sr",]$B.Mkt)      
+      return(TotalComp/value)
+    }
+  } else if (dept=="UI/UX"){
+    if(level == "Junior"){
+      value$pir <- (EQT["UiUx.Jr",]$A.Tgt*log(Seniority)+EQT["UiUx.Jr",]$B.Tgt)
+      value$cpr <- (EQT["UiUx.Jr",]$A.Mkt*log(Seniority)+EQT["UiUx.Jr",]$B.Mkt)  
+      return(TotalComp/value)
+    } else if(level=="Staff"){
+      value$pir <- (EQT["UiUx.Staff",]$A.Tgt*log(Seniority)+EQT["UiUx.Staff",]$B.Tgt)
+      value$cpr <- (EQT["UiUx.Staff",]$A.Mkt*log(Seniority)+EQT["UiUx.Staff",]$B.Mkt)  
+      return(TotalComp/value)
+    } else if(level=="Senior"){
+      value$pir <- (EQT["UiUx.Sr",]$A.Tgt*log(Seniority)+EQT["UiUx.Sr",]$B.Tgt)
+      value$cpr <- (EQT["UiUx.Sr",]$A.Mkt*log(Seniority)+EQT["UiUx.Sr",]$B.Mkt)  
+      return(TotalComp/value)
+    }
+  } else if (dept=="Management"){
+    if(level == "Junior Core Manager"){
+      value$pir <- (EQT["Mgt.Jr",]$A.Tgt*log(Seniority)+EQT["Mgt.Jr",]$B.Tgt)
+      value$cpr <- (EQT["Mgt.Jr",]$A.Mkt*log(Seniority)+EQT["Mgt.Jr",]$B.Mkt)  
+      return(TotalComp/value)
+    } else if(level=="Core Manager"){
+      value$pir <- (EQT["Mgt.Core",]$A.Tgt*log(Seniority)+EQT["Mgt.Core",]$B.Tgt)
+      value$cpr <- (EQT["Mgt.Core",]$A.Mkt*log(Seniority)+EQT["Mgt.Core",]$B.Mkt)  
+      return(TotalComp/value)
+    } else if(level=="Senior Core Manager"){
+      value$pir <- (EQT["Mgt.Sr",]$A.Tgt*log(Seniority)+EQT["Mgt.Sr",]$B.Tgt)
+      value$cpr <- (EQT["Mgt.Sr",]$A.Mkt*log(Seniority)+EQT["Mgt.Sr",]$B.Mkt)  
+      return(TotalComp/value)
+    }
+  } 
+  return(NA)
+}
+
+#### Aux for SelectInput components ####
+
+typeOfRaises <- c("360", "BSU", "City", "Client", "ENG", "Lead", 
+                  "Promo", "Seniority")
+
+# Get the raise value from the select input
+getSelectedRaiseValue <- function(raiseOption){
+  if(length(input$raiseSelection1) >0){
+    if(input$raiseSelection1 == raiseOption & 
+       !is.na(input$raiseSelectionOverride1))
+      return (input$raiseSelectionOverride1)
+    if(input$raiseSelection2 == raiseOption & 
+       !is.na(input$raiseSelectionOverride2))
+      return (input$raiseSelectionOverride2)
+    if(input$raiseSelection3 == raiseOption & 
+       !is.na(input$raiseSelectionOverride3))
+      return (input$raiseSelectionOverride3)
+    else
+      return(-1)
+  }
+  else 
+    return (-1)
+}
+
+filterDuplicatedRaiseOptions <- function(currentOptions, inputSelection){
+  internalAvailableRaises <- character(length = 6)
+  j <- 0
+  for (i in 1:length(currentOptions)) {
+    if(currentOptions[i] != inputSelection){
+       j <- j +1
+       internalAvailableRaises[j] <- currentOptions[i]
+     }
+   }
+   return(internalAvailableRaises)
+ }
+
+hline <- function(y = 0, color = "black") {
+  list(
+    type = "line",
+    x0 = 0,
+    x1 = 1,
+    xref = "paper",
+    y0 = y,
+    y1 = y,
+    line = list(color = color,dash="dot",alpha=0.25)
+  )
+}
+
+Get_Selected_XY_Limits <- function(Sel_Dept = input$Sel_Dept, Sel_Level = input$Sel_Level){
+  # return xy limits and curve parameters for according to parameters
+  if(Sel_Dept =="Automation"){
+    switch(Sel_Level,   # select the level with switch for clarity
+                  "Junior" = return(EQT['Auto.Jr',]),
+                  "Staff"  = return(EQT['Auto.Staff',]),
+                  "Senior" = return(EQT['Auto.Sr',]))
+    }
+  else if(Sel_Dept =="DEV"){
+    switch(Sel_Level,   # select the level with switch for clarity
+           "Junior" = return(EQT['Dev.Jr',]),
+           "Staff"  = return(EQT['Dev.Staff',]),
+           "Senior" = return(EQT['Dev.Sr',]))
+  }
+  else if(Sel_Dept =="DevOps"){
+    switch(Sel_Level,   # select the level with switch for clarity
+           "Junior" = return(EQT['DevOps.Jr',]),
+           "Staff"  = return(EQT['DevOps.Staff',]),
+           "Senior" = return(EQT['DevOps.Sr',]))    
+  }
+  else if(Sel_Dept =="INFO DEV"){
+    switch(Sel_Level,   # select the level with switch for clarity
+           "Junior" = return(EQT['InfoDev.Jr',]),
+           "Staff"  = return(EQT['InfoDev.Staff',]),
+           "Senior" = return(EQT['InfoDev.Sr',]))       
+  }
+  else if(Sel_Dept =="QE"){
+    switch(Sel_Level,   # select the level with switch for clarity
+           "Junior" = return(EQT['QE.Jr',]),
+           "Staff"  = return(EQT['QE.Staff',]),
+           "Senior" = return(EQT['QE.Sr',]))   
+  }
+  else if(Sel_Dept =="UI/UX"){
+    switch(Sel_Level,   # select the level with switch for clarity
+           "Junior" = return(EQT['UiUx.Jr',]),
+           "Staff"  = return(EQT['UiUx.Staff',]),
+           "Senior" = return(EQT['UiUx.Sr',]))       
+  }
+  else if(Sel_Dept =="Management"){
+    switch(Sel_Level,   # select the level with switch for clarity
+           "Junior Core Manager" = return(EQT['Mgt.Jr',]),
+           "Core Manager"  = return(EQT['Mgt.Core',]),
+           "Senior Core Manager" = return(EQT['Mgt.Sr',]))   
+  }
+}
+
+```
+
+```{r load-and-calculate-preliminary-data}
+#load-and-calculate-preliminary-data
+
+# use the line below to log data
+#loggit("INFO", "File: ",Budget.File.Eng," loaded")
+
+# target and market curve stuff
+
+#XY_Limits_DF <- Get_Curve_limits()
+
+```
+
+```{r reactive-stuff}
+# here are all reactive expresions (on the fly calculations) to filter current payroll 2022
+# keep in mind that you cant pass arguments to a reactive expresion... hence expresion instead of function
+#### --------- Reactive properties ####
+engineerPropreties <- reactiveValues(
+  Name = NULL,
+  Dept = NULL,
+  Level = NULL,
+  Jce = NULL,
+  Aniversary = NULL,
+  Location = NULL,
+  SalaryRaise360 = NULL,
+  SalaryPromotion = NULL,
+  LeadBonus = NULL,
+  CityBonus = NULL,
+  EngBonus = NULL,
+  BsuBonus = NULL,
+  ClientBonus = NULL,
+  Risk = NULL,
+  TotalGanado = NULL,
+  BasicoGanado = NULL,
+  TotalComp = NULL,
+  NetPay = NULL,
+  BillingStatus = NULL,
+  ID = NULL,
+  Seniority = NULL,
+  City = NULL,
+  Country = NULL,
+  Est.Raise360 = NULL,
+  Est.Promotion = NULL,
+  Inc.Raise360 = NULL,
+  Inc.Promotion = NULL,
+  OtherBonus = NULL,
+  TotalCost = NULL,
+  AnnualBasicDiff = NULL,
+  AnnualRiskDiff = NULL,
+  AnnualTotalCompDiff = NULL,
+  AnnualNetPayDiff = NULL,
+  AnnualTotalCostDiff = NULL
+)
+
+raiseValues <- reactiveValues(
+  aniversaryBonusInput = NULL,
+  promoBonusInput = NULL,
+  leadInput = NULL,
+  cityBonusInput = NULL,
+  engBonusInput = NULL,
+  bsuBonusInput = NULL,
+  clientBonusInput = NULL,
+  seniorityInput = NULL,
+  inc.360 = NULL,
+  inc.Prom = NULL,
+  inc.Lead = NULL,
+  inc.City = NULL,
+  inc.EngBonus = NULL,
+  inc.BsuBonus = NULL,
+  inc.ClientBonus = NULL
+)
+
+RaiseSelectedOption <- reactiveValues(
+  selected1 = NULL, selected2 = NULL, selected3 = NULL)
+
+#### --------- Select Inputs reactive calls ####
+createSelectInput1 <- reactive({
+   if(length(input$raiseSelection2) >0 & length(input$raiseSelection3)>0){
+     availableRaises <- filterDuplicatedRaiseOptions(typeOfRaises,input$raiseSelection2)
+     availableRaises <- filterDuplicatedRaiseOptions(availableRaises,input$raiseSelection3)
+     if(input$raiseSelection1 != RaiseSelectedOption$selected1){
+       RaiseSelectedOption$selected1 <- input$raiseSelection1
+     }
+   }
+   else{
+     availableRaises <- filterDuplicatedRaiseOptions(typeOfRaises,typeOfRaises[2])
+     availableRaises <- filterDuplicatedRaiseOptions(availableRaises,typeOfRaises[3])
+     RaiseSelectedOption$selected1 <- availableRaises[1]
+   }
+   
+  selectInput("raiseSelection1","", availableRaises, selected = RaiseSelectedOption$selected1)
+})
+  
+createSelectInput2 <- reactive({
+  if(length(input$raiseSelection1)>0 & length(input$raiseSelection3)>0){
+    availableRaises <- filterDuplicatedRaiseOptions(typeOfRaises,input$raiseSelection1)
+    availableRaises <- filterDuplicatedRaiseOptions(availableRaises, input$raiseSelection3)
+    if(input$raiseSelection2 != RaiseSelectedOption$selected2){
+       RaiseSelectedOption$selected2 <- input$raiseSelection2
+    }
+  }
+  else{
+    availableRaises <- filterDuplicatedRaiseOptions(typeOfRaises,typeOfRaises[1])
+    availableRaises <- filterDuplicatedRaiseOptions(availableRaises, typeOfRaises[3])
+    RaiseSelectedOption$selected2 <- availableRaises[1]
+  }
+   
+  selectInput("raiseSelection2","", availableRaises, selected = RaiseSelectedOption$selected2)
+})
+
+createSelectInput3 <- reactive({
+  if(length(input$raiseSelection1)>0 & length(input$raiseSelection2)>0){
+    availableRaises <- filterDuplicatedRaiseOptions(typeOfRaises,input$raiseSelection1)
+    availableRaises <- filterDuplicatedRaiseOptions(availableRaises, input$raiseSelection2)
+    if(input$raiseSelection3 != RaiseSelectedOption$selected3){
+       RaiseSelectedOption$selected3 <- input$raiseSelection3
+    }
+  }
+  else{
+   availableRaises <- filterDuplicatedRaiseOptions(typeOfRaises,typeOfRaises[1])
+   availableRaises <- filterDuplicatedRaiseOptions(availableRaises,typeOfRaises[2])
+   RaiseSelectedOption$selected3 <- availableRaises[1]
+  }
+  
+  selectInput("raiseSelection3","", availableRaises, selected = RaiseSelectedOption$selected3)
+})
+
+#### --------- Eng Subset ####
+Eng.Data.Sub.Set.To.Plot <- reactive({
+  if(!is.na(input$Eng_ID) & input$Eng_ID == 0) {   # if entered ID is 0 create a fake row
+    Selected <- Set.To.Empty(Eng.Payroll[1, ]) # get any row of Eng.Full.Payroll and set it to empty or 0
+    get_sel_month_df_To_Plot(input$Sel_Month, Selected, input$Curve) #%>%
+    #update_selected_currency() # convert to usd / bob accordingly
+  }
+  # verify if entered ID is not NA, > 1000 and exists in the dataframe
+  else if(!is.na(input$Eng_ID) & input$Eng_ID > 1000 & any(Eng.Payroll$ID==input$Eng_ID)) {
+    if(isAnyOverrideValue()){
+      updateNumericInput(
+        session = getDefaultReactiveDomain(),
+        inputId = "raiseSelectionOverride1",
+        label = NULL,
+        value = NA
+      )
+      
+      updateNumericInput(
+        session = getDefaultReactiveDomain(),
+        inputId = "raiseSelectionOverride2",
+        label = NULL,
+        value = NA
+      )
+      
+      updateNumericInput(
+        session = getDefaultReactiveDomain(),
+        inputId = "raiseSelectionOverride3",
+        label = NULL,
+        value = NA
+      )
+    }
+    Selected <- Eng.Payroll[Eng.Payroll$ID == input$Eng_ID, ]     # filter selected ID
+    Selected <- get_sel_month_df_To_Plot(input$Sel_Month, Selected, input$Curve)  %>% # forgot to set Selected <-
+            mutate_if(is.numeric, round,digits=2)
+  }
+  # this is the general case
+  else {
+    if(!is.null(input$Sel_Unit)){
+      
+    Selected <- get_sel_month_df_To_Plot(input$Sel_Month, 
+                                 Eng.Payroll %>% 
+              filter( Unit %in% input$Sel_Unit &
+                      Dept %in% input$Sel_Dept & Level %in% input$Sel_Level &
+                      Aniversary %in% input$Sel_Aniv),
+              input$Curve) %>% filter(
+                      Tot.Seniority >= input$Seniority.Range[1] &
+                      Tot.Seniority <= input$Seniority.Range[2])  %>%
+                      mutate_if(is.numeric, round,digits=2)
+    }
+    else{
+      Selected <- get_sel_month_df_To_Plot("January",
+                                   Set.To.Empty(Eng.Payroll[1, ]),
+                                   input$Curve) %>% 
+        filter(Dept %in% "NA")
+    }
+  }
+})
+
+Eng.Data.Sub.Set <- reactive({
+  # get subset of engineers based on current active filters.   
+  # this function refactored to move duplicate code to get_sel_month_df function
+  # also added a condition when entered ID is 0 to create a fake row with ID = 0000
+  
+  if(!is.na(input$Eng_ID) & input$Eng_ID == 0) {   # if entered ID is 0 create a fake row
+    Selected <- Set.To.Empty(Eng.Payroll[1, ]) # get any row of Eng.Full.Payroll and set it to empty or 0
+    get_sel_month_df(input$Sel_Month,Selected) #%>%
+    #update_selected_currency() # convert to usd / bob accordingly
+  }
+  # verify if entered ID is not NA, > 1000 and exists in the dataframe
+  else if(!is.na(input$Eng_ID) & input$Eng_ID > 1000 & any(Eng.Payroll$ID==input$Eng_ID)) {
+    Selected <- Eng.Payroll[Eng.Payroll$ID == input$Eng_ID, ]     # filter selected ID
+
+    ReactiveDomain <- getDefaultReactiveDomain() # get the the reactive domain so it doesnt have to be called
+
+    updateSelectInput(
+      session = ReactiveDomain,
+      inputId = "Sel_Dept",
+      label = NULL,
+      choices = NULL,
+      selected = Selected$Dept)
+
+    updateSelectInput(
+      session = ReactiveDomain,
+      inputId = "Sel_Level",
+      label = NULL,
+      choices = NULL,
+      selected = Selected$Level)
+
+    updateSelectInput(
+      session = ReactiveDomain,
+      inputId = "Sel_Unit",
+      label = NULL,
+      choices = NULL,
+      selected = Selected$Unit)
+
+    Selected <- get_sel_month_df(input$Sel_Month,Selected)  %>% # forgot to set Selected <-
+            mutate_if(is.numeric, round,digits=2)
+  }
+  # this is the general case
+  else {
+    if(!is.null(input$Sel_Unit)){
+      
+    Selected <- get_sel_month_df(input$Sel_Month, 
+                                 Eng.Payroll %>% 
+    filter( Unit %in% input$Sel_Unit &
+            Dept %in% input$Sel_Dept & Level %in% input$Sel_Level &
+            Aniversary %in% input$Sel_Aniv)) %>% filter(
+            Tot.Seniority >= input$Seniority.Range[1] &
+            Tot.Seniority <= input$Seniority.Range[2])  %>%
+            mutate_if(is.numeric, round,digits=2)
+      #update_selected_currency() # convert to usd / bob accordingly
+    }
+    else{
+      Selected <- get_sel_month_df("January",
+                                   Set.To.Empty(Eng.Payroll[1, ])) %>% 
+        filter(Dept %in% "NA")
+    }
+  }
+})
+
+Selected_User_Full_Data_Eng <- reactive({
+    # get the selected user full data
+  Eng.Payroll[Eng.Payroll$ID==engineerPropreties$ID,]
+}) 
+
+Selected_User_Full_Data_Lat <- reactive({
+    # get the selected user full data
+  Lat.Payroll[Lat.Payroll$ID==engineerPropreties$ID,]
+}) 
+
+Selected_User_Full_Data_Bol <- reactive({
+    # get the selected user full data
+  Bol.Payroll[Bol.Payroll$ID==engineerPropreties$ID,]
+}) 
+
+#### --------- Eng Market/Target ####
+Next.Level <- reactive({
+  switch(input$Sel_Level,
+         "Junior" = "Staff",
+         "Staff" = "Senior",
+         "Senior" = NA,   # Set NA for those levels that we dont want to graph
+         "Junior Core Manager" = "Core Manager",
+         "Core Manager" = NA,
+         "Senior Core Manager" = NA)
+})
+
+Eng.Market.Curve <- reactive({
+  # filter new log curve according to dept and level
+  CreateMarketSalaryBandsByDept(input$Sel_Dept)
+})
+
+Eng.Target.Curve <- reactive({
+  # filter new log curve according to dept and level
+  CreateTargetSalaryBandsByDept(input$Sel_Dept)
+})
+
+#### --------- 360/Prom exec ####
+Get_360.Prom.Budget <- reactive({
+  # this is a reactive function to get selected units only  
+  raises <- left_join(Bol.Payroll %>% group_by(Unit) %>%  
+                        summarize(Jan.360=sum(Inc.360.Jan),Feb.360=sum(Inc.360.Feb),Mar.360=sum(Inc.360.Mar),
+                                  Apr.360=sum(Inc.360.Apr),May.360=sum(Inc.360.May),Jun.360=sum(Inc.360.Jun),
+                                  Jul.360=sum(Inc.360.Jul),Aug.360=sum(Inc.360.Aug),Sep.360=sum(Inc.360.Sep),
+                                  Oct.360=sum(Inc.360.Oct),Nov.360=sum(Inc.360.Nov),Dec.360=sum(Inc.360.Dec)),
+                      Bol.Payroll %>% group_by(Unit) %>% 
+                        summarize(Jan.Prom=sum(Inc.Prom.Jan),Feb.Prom=sum(Inc.Prom.Feb),Mar.Prom=sum(Inc.Prom.Mar),
+                                  Apr.Prom=sum(Inc.Prom.Apr),May.Prom=sum(Inc.Prom.May),Jun.Prom=sum(Inc.Prom.Jun),
+                                  Jul.Prom=sum(Inc.Prom.Jul),Aug.Prom=sum(Inc.Prom.Aug),Sep.Prom=sum(Inc.Prom.Sep),
+                                  Oct.Prom=sum(Inc.Prom.Oct),Nov.Prom=sum(Inc.Prom.Nov),Dec.Prom=sum(Inc.Prom.Dec)),
+                      by="Unit")  
+  # add the labor law costs
+  raises[,2:ncol(raises)]<-raises[,2:ncol(raises)]*(1+P.Indem+P.Aguin1+P.Aguin2+Aportes) # this doesnt seem to be working
+  
+  Lat.Raises <- left_join(Lat.Payroll %>% group_by(Unit) %>% 
+                            summarize(Jan.360=sum(Inc.360.Jan),Feb.360=sum(Inc.360.Feb),Mar.360=sum(Inc.360.Mar),
+                                      Apr.360=sum(Inc.360.Apr),May.360=sum(Inc.360.May),Jun.360=sum(Inc.360.Jun),
+                                      Jul.360=sum(Inc.360.Jul),Aug.360=sum(Inc.360.Aug),Sep.360=sum(Inc.360.Sep),
+                                      Oct.360=sum(Inc.360.Oct),Nov.360=sum(Inc.360.Nov),Dec.360=sum(Inc.360.Dec)),
+                          Lat.Payroll %>% group_by(Unit) %>%
+                            summarize(Jan.Prom=sum(Inc.Prom.Jan),Feb.Prom=sum(Inc.Prom.Feb),Mar.Prom=sum(Inc.Prom.Mar),
+                                      Apr.Prom=sum(Inc.Prom.Apr),May.Prom=sum(Inc.Prom.May),Jun.Prom=sum(Inc.Prom.Jun),
+                                      Jul.Prom=sum(Inc.Prom.Jul),Aug.Prom=sum(Inc.Prom.Aug),Sep.Prom=sum(Inc.Prom.Sep),
+                                      Oct.Prom=sum(Inc.Prom.Oct),Nov.Prom=sum(Inc.Prom.Nov),Dec.Prom=sum(Inc.Prom.Dec)),
+                          by="Unit")  
+  
+  # sum bol + lat  and round to 0 decimal
+  raises[,2:ncol(raises)]<-round(raises[,2:ncol(raises)]+Lat.Raises[,2:ncol(Lat.Raises)],digits = 0)
+  # filter selected units only
+  raises<-raises[!is.na(raises$Unit),] %>% filter(Unit %in% input$Sel_Unit)
+  
+  return(raises)
+})
+
+Get_Estimated.360.Prom.Budget <- reactive({
+  # this is a reactive fucntion to get selected units only  
+  raises <- Raises.Summary.per.Unit
+  
+  # round to 0 decimal  
+  raises[,2:ncol(raises)] <- round(raises[,2:ncol(raises)],digits = 0)
+
+  # filter selected units only
+  raises<-raises[!is.na(raises$Unit),] %>% filter(Unit %in% input$Sel_Unit)
+  
+  return(raises)
+})
+
+#### --------- Initialize reactive values ####
+getEngineerProperties <-reactive({
+  Eng.Data.Sub.Set <- Eng.Data.Sub.Set()
+  #Column1
+  engineerPropreties$ID <- (Eng.Data.Sub.Set[input$table_rows_selected, ]$RealID) # return the real ID instead of the http link
+  engineerPropreties$Name <- (Eng.Data.Sub.Set[input$table_rows_selected, ]$Name)  
+  engineerPropreties$Dept <- (Eng.Data.Sub.Set[input$table_rows_selected, ]$Dept)
+  engineerPropreties$Level <- (Eng.Data.Sub.Set[input$table_rows_selected, ]$Level)
+  engineerPropreties$Jce <-  (Eng.Data.Sub.Set[input$table_rows_selected, ]$JCE)
+  # engineerPropreties$Seniority <-  (Eng.Data.Sub.Set[input$table_rows_selected, ]$Tot.Seniority)
+  engineerPropreties$Aniversary <- (Eng.Data.Sub.Set[input$table_rows_selected, ]$Aniversary)
+  engineerPropreties$BillingStatus <- (Eng.Data.Sub.Set[input$table_rows_selected, ]$Billing.Status)
+  engineerPropreties$City <- (Eng.Data.Sub.Set[input$table_rows_selected, ] $Work.City)
+  engineerPropreties$Country <- (Eng.Data.Sub.Set[input$table_rows_selected, ] $Work.Country)
+
+  #Column2
+  engineerPropreties$Est.Raise360 <- (Eng.Data.Sub.Set[input$table_rows_selected, ]$E.Raise.360)
+  engineerPropreties$Est.Promotion <- (Eng.Data.Sub.Set[input$table_rows_selected, ]$E.Raise.Prom)
+  engineerPropreties$Inc.Raise360 <- (Eng.Data.Sub.Set[input$table_rows_selected, ]$Inc.360)
+  engineerPropreties$Inc.Promotion <- (Eng.Data.Sub.Set[input$table_rows_selected, ]$Inc.Prom)
+  engineerPropreties$LeadBonus <- (Eng.Data.Sub.Set[input$table_rows_selected, ]$B.Lead)
+  engineerPropreties$CityBonus <- (Eng.Data.Sub.Set[input$table_rows_selected, ]$B.City)
+
+  #Column3
+  engineerPropreties$EngBonus <- (Eng.Data.Sub.Set[input$table_rows_selected, ]$B.ENG)
+  engineerPropreties$BsuBonus <- (Eng.Data.Sub.Set[input$table_rows_selected, ]$B.BSU)
+  engineerPropreties$ClientBonus <- (Eng.Data.Sub.Set[input$table_rows_selected, ]$B.Client)
+  engineerPropreties$OtherBonus <- (Eng.Data.Sub.Set[input$table_rows_selected, ]$B.Other)
+  # engineerPropreties$Risk <- (Eng.Data.Sub.Set[input$table_rows_selected, ]$Risk)
+
+  #Column4
+  # engineerPropreties$TotalGanado <- (Eng.Data.Sub.Set[input$table_rows_selected, ]$TG)
+  # engineerPropreties$BasicoGanado <- (Eng.Data.Sub.Set[input$table_rows_selected, ]$Basic)
+  # engineerPropreties$TotalComp <- (Eng.Data.Sub.Set[input$table_rows_selected, ]$TotalComp)
+  # engineerPropreties$NetPay <- (Eng.Data.Sub.Set[input$table_rows_selected, ]$NetPay)
+  # engineerPropreties$TotalCost <- (Eng.Data.Sub.Set[input$table_rows_selected, ]$TotalCost)
+})
+
+InitializeAnnualImpactReactValues <- reactive({
+  engineerPropreties$AnnualBasicDiff <- 0
+      engineerPropreties$AnnualRiskDiff <- 0
+      engineerPropreties$AnnualTotalCompDiff <- 0
+      engineerPropreties$AnnualNetPayDiff <- 0
+      engineerPropreties$AnnualTotalCostDiff <- 0
+})
+
+#### Column 1 - Name, Dpt, Anniversary, Location ####
+
+getEmployeeName <- reactive({
+  if (length(input$table_rows_selected)==0) {
+    VB.Name <- "[Employee ID] - [Full Name]"
+  }
+  else{
+    getEngineerProperties()
+    VB.Name <- paste(engineerPropreties$ID,"-" , engineerPropreties$Name) # change name instead of http link
+  }
+ valueBox(h4(VB.Name,style = BI_ValueBoxStyle), 
+          icon = "fa-address-card-o",color = JS.Blue)
+})
+
+getEmployeeDepartment <- reactive({
+   if (length(input$table_rows_selected)==0) {
+    VB.Lvl.Dept <- "[Level] [Department] - [Seniority in years] "
+  }
+  else{
+    raiseValues$seniorityInput <- getSelectedRaiseValue("Seniority")
+    if(raiseValues$seniorityInput>0){
+      engineerPropreties$Seniority <- raiseValues$seniorityInput
+    }
+    else{
+      engineerPropreties$Seniority <- Eng.Data.Sub.Set()[input$table_rows_selected, ]$Tot.Seniority
+      engineerPropreties$JS.Seniority <- Eng.Data.Sub.Set()[input$table_rows_selected, ]$JS.Seniority
+    }
+    VB.Seniority.value <- paste(engineerPropreties$JS.Seniority,"/",engineerPropreties$Seniority)
+    VB.Lvl.Dept <- paste(engineerPropreties$Level, engineerPropreties$Dept, " - ", VB.Seniority.value, "years")
+  }
+  
+  valueBox(h4(VB.Lvl.Dept,style = BI_ValueBoxStyle))
+})
+
+getEmployeeAniversary <- reactive({
+  if (length(input$table_rows_selected)==0) {
+    VB.Anniversary <- "[Anniversary] - [JCE?] - [Billing Status]"
+  }
+  else{
+    VB.Anniversary  <- paste(engineerPropreties$Aniversary, " (anniversary) - ", 
+                             engineerPropreties$Jce, " - ", engineerPropreties$BillingStatus) 
+  }
+  
+  valueBox(h4(VB.Anniversary,style = BI_ValueBoxStyle))
+})
+
+getEmployeeCity <- reactive({
+  VB.location <- ifelse(length(input$table_rows_selected)==0, "[City] - [Country]", paste(engineerPropreties$City, "-" ,engineerPropreties$Country))
+      valueBox(h4(VB.location,style = BI_ValueBoxStyle))
+})
+
+#### Column 2 - 360, Prom, Lead, City ####
+getEmployee360 <- reactive({
+if (length(input$table_rows_selected)==0) {
+    VB.360.value <- "[360 Estimated Value] - [360 Executed Value]"
+  }
+  else{
+  raiseValues$aniversaryBonusInput <- getSelectedRaiseValue("360")
+  if(raiseValues$aniversaryBonusInput >= 0){
+      VB.360.exec.value <- raiseValues$aniversaryBonusInput
+      raiseValues$inc.360 <- raiseValues$aniversaryBonusInput - 
+        engineerPropreties$Inc.Raise360
+  }
+  else{
+      VB.360.exec.value <- engineerPropreties$Inc.Raise360
+      raiseValues$inc.360 <-0
+  }
+  VB.360.value <- paste("360 Est.: $", engineerPropreties$Est.Raise360, 
+                               " - 360 Exec.: $", 
+                               VB.360.exec.value)
+  }
+  
+  valueBox(h4(VB.360.value, style = BI_ValueBoxStyle), 
+           icon = "fa-money", color = JS.Blue)
+})
+
+getEmployeePromValue <- reactive({
+if (length(input$table_rows_selected)==0) {
+    VB.prom.value <- "[Prom. Estimated Value] - [Prom. Executed Value]"
+  }
+  else{
+    raiseValues$promoBonusInput <- getSelectedRaiseValue("Promo")
+    if(raiseValues$promoBonusInput >= 0){
+      VB.prom.exec.value <- raiseValues$promoBonusInput
+      raiseValues$inc.Prom <- raiseValues$promoBonusInput - engineerPropreties$Inc.Promotion
+    }
+    else{
+      VB.prom.exec.value <- engineerPropreties$Inc.Promotion
+      raiseValues$inc.Prom <- 0
+    }
+    VB.prom.value  <- paste("Prom Est.: $", engineerPropreties$Est.Promotion, 
+                            " - Prom Exec.: $", 
+                            VB.prom.exec.value)
+  }
+  
+   valueBox(h4(VB.prom.value,style = BI_ValueBoxStyle))
+})
+
+getEmployeeLeadValue <- reactive({
+if (length(input$table_rows_selected)==0) {
+    VB.Lead <- "[Lead Bonus]"
+  }
+  else{
+    raiseValues$leadInput <- getSelectedRaiseValue("Lead")
+    if(raiseValues$leadInput >= 0){
+      VB.Lead.value <- raiseValues$leadInput
+      raiseValues$inc.Lead <- raiseValues$leadInput - engineerPropreties$LeadBonus
+    }
+    else{
+      VB.Lead.value <- engineerPropreties$LeadBonus
+      raiseValues$inc.Lead <- 0
+    }
+  
+    VB.Lead <- paste("Lead Bonus: $" ,VB.Lead.value)
+  }  
+  
+  valueBox(h4(VB.Lead,style = BI_ValueBoxStyle))
+})
+
+getEmployeeCityBonus <- reactive({
+if (length(input$table_rows_selected)==0) {
+    VB.City <- "[City Bonus]"
+  }
+  else{
+    raiseValues$cityBonusInput <- getSelectedRaiseValue("City")
+    if(raiseValues$cityBonusInput >= 0){
+      VB.City.value <- raiseValues$cityBonusInput
+      raiseValues$inc.City <- raiseValues$cityBonusInput - engineerPropreties$CityBonus
+    }
+    else{
+      VB.City.value <- engineerPropreties$CityBonus
+      raiseValues$inc.City <- 0
+    }
+    
+    VB.City <- paste("City Bonus: $" ,VB.City.value)  
+  }  
+  
+  valueBox(h4(VB.City,style = BI_ValueBoxStyle))
+})
+
+#### Column 3 - ENG, BSU, Client, Risk####
+
+getEmployeeEngBonus <- reactive({
+if (length(input$table_rows_selected)==0) {
+    VB.ENG.Bonus <- "[Engineering Bonus] [Monthly/Yearly/etc.]"
+  }
+  else{
+    raiseValues$engBonusInput <- getSelectedRaiseValue("ENG")
+    if(raiseValues$engBonusInput >= 0){
+      VB.ENG.value <- raiseValues$engBonusInput
+      raiseValues$inc.EngBonus <- raiseValues$engBonusInput - engineerPropreties$EngBonus
+    }
+    else{
+      VB.ENG.value <- engineerPropreties$EngBonus
+      raiseValues$inc.EngBonus <- 0
+    }
+    
+    VB.ENG.Bonus <- paste("ENG Bonus: $" ,VB.ENG.value)
+  }
+  
+  valueBox(h4(VB.ENG.Bonus,style = BI_ValueBoxStyle), icon = "fa-dollar",color = JS.Blue)
+})
+
+getEmployeeBsuBonus <- reactive({
+if (length(input$table_rows_selected)==0) {
+    VB.BSU.Bonus <- "[BSU Bonus] [Monthly/Yearly/etc.]"
+  }
+  else{
+    raiseValues$bsuBonusInput <- getSelectedRaiseValue("BSU")
+    if(raiseValues$bsuBonusInput >= 0){
+      VB.BSU.value <- raiseValues$bsuBonusInput
+      raiseValues$inc.BsuBonus <- raiseValues$bsuBonusInput - engineerPropreties$BsuBonus
+    }
+    else{
+      VB.BSU.value <- engineerPropreties$BsuBonus
+      raiseValues$inc.BsuBonus <- 0
+    }
+  
+    VB.BSU.Bonus <- paste("BSU Bonus: $" ,VB.BSU.value)
+  }
+  
+  valueBox(h4(VB.BSU.Bonus,style = BI_ValueBoxStyle))
+})
+
+getEmployeeClientBonus <- reactive({
+if (length(input$table_rows_selected)==0) {
+    VB.Client.Bonus <- "[Client Bonus] [Monthly]"
+  }
+  else{
+    raiseValues$clientBonusInput <- getSelectedRaiseValue("Client")
+    if(raiseValues$clientBonusInput >= 0){
+      VB.Client.value <- raiseValues$clientBonusInput
+      raiseValues$inc.ClientBonus <- raiseValues$clientBonusInput - engineerPropreties$ClientBonus
+    }
+    else{
+      VB.Client.value <- engineerPropreties$ClientBonus
+      raiseValues$inc.ClientBonus <- 0
+    }
+   
+    VB.Client.Bonus <- paste("Client Bonus: $" ,VB.Client.value)  
+  }
+
+  valueBox(h4(VB.Client.Bonus,style = BI_ValueBoxStyle))
+})
+
+getEmployeeRiskBonus <- reactive({
+  VB.Risk.Bonus <- ifelse(length(input$table_rows_selected)==0, "[Risk Bonus]", paste("Risk Bonus: $" ,engineerPropreties$Risk))
+  valueBox(h4(VB.Risk.Bonus,style = BI_ValueBoxStyle))
+})
+
+getEmployeeOtherBonus <- reactive({
+  VB.Other.Bonus <- ifelse(length(input$table_rows_selected)==0, "[Other Bonus]", paste("Other Bonus: $" ,engineerPropreties$OtherBonus))
+  valueBox(h4(VB.Other.Bonus,style = BI_ValueBoxStyle))
+})
+
+#### Column 4 - TG, Basic, TC, Net Pay ####
+getEmployeeBasicGanado <- reactive({
+if (length(input$table_rows_selected)==0) {
+    VB.Basic.Value <- "[Basic]"
+  }
+  else{
+    #PR$Basic <- PR$HB + PR$BJP + PR$Inc.360 + PR$Inc.Prom + PR$BA + PR$Inc.HB + PR$B.Other
+    engineerPropreties$BasicoGanado <- Eng.Data.Sub.Set()[input$table_rows_selected, ]$Basic + 
+      raiseValues$inc.360 + raiseValues$inc.Prom
+    basic <- prettyNum(engineerPropreties$BasicoGanado, big.mark = ",")
+    VB.Basic.Value <- paste("Basic: $" , basic)  
+  }
+  
+  valueBox(h4(VB.Basic.Value, style = BI_ValueBoxStyle), icon="fa fa-line-chart", color = JS.Blue)
+})
+
+getEmployeeTRiskTGanado <- reactive({
+  if (length(input$table_rows_selected)==0) {
+    VB.TG.Value <- "[Risk Bonus] - [Total Ganado]"
+  }
+  else{
+    # PR$TG <- PR$HB + PR$BJP + PR$Inc.360 + PR$Inc.Prom + PR$BA + PR$B.Lead + PR$B.BSU + PR$B.ENG + PR$B.Client + PR$B.City + PR$Inc.HB
+  #Risk <- BSUBonus + ENGBonus + ClientBonus
+  engineerPropreties$Risk <- Eng.Data.Sub.Set()[input$table_rows_selected, ]$Risk + 
+                                raiseValues$inc.BsuBonus +
+                                raiseValues$inc.EngBonus +
+                                raiseValues$inc.ClientBonus
+  engineerPropreties$TotalGanado <- Eng.Data.Sub.Set()[input$table_rows_selected, ]$TG + 
+                                raiseValues$inc.360 +
+                                raiseValues$inc.Prom +
+                                raiseValues$inc.Lead +
+                                raiseValues$inc.City +
+                                raiseValues$inc.EngBonus +
+                                raiseValues$inc.BsuBonus +
+                                raiseValues$inc.ClientBonus
+  VB.TG.Value <- paste("Risk Bonus: $" , 
+                       prettyNum(engineerPropreties$Risk, big.mark = ","), 
+                       "  -   Total G.: $" ,
+                       prettyNum(engineerPropreties$TotalGanado, big.mark = ","))
+  }
+  
+  valueBox(h4(VB.TG.Value,style = BI_ValueBoxStyle), 
+           icon="fa fa-line-chart", color = JS.Blue)
+})
+
+getEmployeeTotalCompTotalCost <- reactive({
+  
+   if(length(input$table_rows_selected)==0){
+     VB.TC.Value <- "[Total Compensation] - [Total Cost]"
+     engineerPropreties$TotalComp <- 0
+   }
+   else{
+     # PR$TotalComp <- PR$Basic + PR$Risk +PR$PI + PR$PA1 
+  engineerPropreties$TotalComp <- Eng.Data.Sub.Set()[input$table_rows_selected, ]$TotalComp +
+                           raiseValues$inc.360 + 
+                           raiseValues$inc.Prom +
+                           raiseValues$inc.EngBonus +
+                           raiseValues$inc.BsuBonus +
+                           raiseValues$inc.ClientBonus
+  
+   totalComp <- prettyNum(engineerPropreties$TotalComp, big.mark = ",")
+   
+  # PR$NetPay <- PR$TotalComp + PR$B.Lead + PR$B.City 
+  # PR$TotalCost <- PR$NetPay + PR$AP
+   engineerPropreties$TotalCost <- Eng.Data.Sub.Set()[input$table_rows_selected, ]$TotalCost + 
+                        raiseValues$inc.360 + 
+                        raiseValues$inc.Prom +
+                        raiseValues$inc.EngBonus +
+                        raiseValues$inc.BsuBonus +
+                        raiseValues$inc.ClientBonus +
+                        raiseValues$inc.Lead +
+                        raiseValues$inc.City
+   
+   totalCost <- prettyNum(engineerPropreties$TotalCost, big.mark = ",")
+   VB.TC.Value <- paste("Total Comp.: $" ,totalComp, "  -  Total Cost: $" ,totalCost)
+   }
+  valueBox(h4(VB.TC.Value,style = BI_ValueBoxStyle))
+})
+
+getEmployeeNetPayLiquido <- reactive({
+    if (length(input$table_rows_selected)==0) {
+    VB.Net.Value <- "[Net Pay] - [Liquido Pagable]"
+  }
+  else{
+  #PR$NetPay <- PR$TotalComp + PR$B.Lead + PR$B.City 
+  engineerPropreties$NetPay <- Eng.Data.Sub.Set()[input$table_rows_selected, ]$NetPay +
+    raiseValues$inc.360 +raiseValues$inc.Prom + raiseValues$inc.EngBonus + 
+    raiseValues$inc.BsuBonus + raiseValues$inc.ClientBonus + 
+    raiseValues$inc.Lead + raiseValues$inc.City
+  
+  netPay <- prettyNum(engineerPropreties$NetPay, big.mark = ",")
+  liquido <- prettyNum(round(engineerPropreties$TotalGanado * 
+                             (1-0.1271),2), big.mark = ",")
+  
+  VB.Net.Value <- paste("Net Pay: $" , netPay, "  -  Liquido: $" , liquido)
+  }
+  valueBox(h4(VB.Net.Value,style = BI_ValueBoxStyle))
+})
+
+getEmployeePIRComparatio <- reactive({
+  if(length(input$table_rows_selected)==0){
+    VB.Net.Value <- "[PIR] - [CompaRatio]"
+  }
+  else{
+    pir.cpr<-Get_PIR_and_CompaRatio(engineerPropreties$Dept, 
+                                    engineerPropreties$Level, 
+                                    engineerPropreties$Seniority, 
+                                    engineerPropreties$TotalComp)
+    VB.Net.Value <- paste("PIR: " , percent(pir.cpr$pir,accuracy = 2), 
+                          " - CompaRatio: ", percent(pir.cpr$cpr,accuracy = 2))
+  }
+  valueBox(h4(VB.Net.Value,style = BI_ValueBoxStyle))
+})
+
+getAnnualImpactValues <- reactive({
+  if(length(input$table_rows_selected)==0){
+    Annual.Basic.Risk.Value <- "[Annual Basic Diff] - [Annual Risk Diff]"
+    Annual.Comp.Value <- "[Annual Comp Diff]"
+    Annual.NetPay.Value <- "[Annual Net Pay Diff]"
+    Annual.Cost.Value <- "[Annual Cost Diff]"
+  }
+  else{
+    if(!isAnyOverrideValue()){
+      engineerPropreties$AnnualBasicDiff <- 0
+      engineerPropreties$AnnualRiskDiff <- 0
+      engineerPropreties$AnnualTotalCompDiff <- 0
+      engineerPropreties$AnnualNetPayDiff <- 0
+      engineerPropreties$AnnualTotalCostDiff <- 0
+    }
+    
+    Annual.Basic.Risk.Value <- paste("Annual Basic Diff: $" , round(
+                                     engineerPropreties$AnnualBasicDiff, 0),
+                                     "Annual Risk: $", round(
+                                     engineerPropreties$AnnualRiskDiff,0))
+    Annual.Comp.Value <- paste("Annual Total Comp: $", round(
+                               engineerPropreties$AnnualTotalCompDiff,0))
+    Annual.NetPay.Value <- paste("Annual Net Pay: $", round(
+                                 engineerPropreties$AnnualNetPayDiff,0))
+    Annual.Cost.Value <- paste("Annual Total Cost: $", round(
+                               engineerPropreties$AnnualTotalCostDiff,0))
+    }
+  
+  output$AnnualBasicImpact <- renderValueBox(
+    valueBox(h4(Annual.Basic.Risk.Value, style = BI_ValueBoxStyle),
+             icon="fa fa-line-chart", color = JS.Blue))
+
+  output$AnnualTotalCompImpact <- renderValueBox(
+    valueBox(h4(Annual.Comp.Value, style = BI_ValueBoxStyle), 
+             icon="fa fa-line-chart", color = JS.Blue))
+  
+  output$AnnualNetPayImpact <- renderValueBox(
+    valueBox(h4(Annual.NetPay.Value, style = BI_ValueBoxStyle), 
+             icon="fa fa-line-chart", color = JS.Blue))
+  
+  output$AnnualTotalCostImpact <- renderValueBox(
+    valueBox(h4(Annual.Cost.Value, style = BI_ValueBoxStyle), 
+             icon="fa fa-line-chart", color = JS.Blue))
+})
+
+#### Tab Tracking ####
+Summarize.360.Totals <- reactive({
+  S.360.Tot <- rbind(Get.360.Estimated.And.Executed.Budget(Get_360.Prom.Budget(),Get_Estimated.360.Prom.Budget()),
+                     Get.360.Estimated.And.Executed.Budget(Get_360.Prom.Budget(),Get_Estimated.360.Prom.Budget()) %>%
+                       summarise(Month="Tot",E.Inc.360 = sum(E.Inc.360), X.Inc.360=sum(X.Inc.360),Inc.360.Dif=sum(Inc.360.Dif)))
+  return(S.360.Tot)
+})
+
+Summarize.Prom.Totals <- reactive({
+  S.Prom.Tot <- rbind(Get.Prom.Estimated.And.Executed.Budget(Get_360.Prom.Budget(),Get_Estimated.360.Prom.Budget()),
+                      Get.Prom.Estimated.And.Executed.Budget(Get_360.Prom.Budget(),Get_Estimated.360.Prom.Budget()) %>%
+                        summarise(Month="Tot",E.Inc.Prom = sum(E.Inc.Prom),
+                                  X.Inc.Prom=sum(X.Inc.Prom),Inc.Prom.Dif=sum(Inc.Prom.Dif)))
+  return(S.Prom.Tot)
+})
+
+#### Plot Curves ####
+Payroll.2022.To.Plot <- reactive({
+  Payroll.2022 %>% dplyr::select(Dept, Level, Basic, TotalComp, Seniority, ID) %>% 
+      filter(Dept %in% input$Sel_Dept) %>% # select dept and level
+       mutate(PlotCol = if(input$Curve %in% "Basic")
+        {Basic} else
+        {TotalComp})
+})
+
+
+PlotCurrentLevelCurve <- reactive({
+  ggplotly(
+      Payroll.2022.To.Plot() %>% filter(Level %in% input$Sel_Level) %>% 
+      ggplot() +
+
+      # this is the Target Curve
+      geom_line(data=Eng.Target.Curve() %>% filter(Level %in% input$Sel_Level), 
+                aes(x=Seniority,y=TotalComp),
+                color=BI_Blue,alpha=0.75,size=1) +#,se=F) +
+
+      # this is the Market Curve
+      geom_line(data=Eng.Market.Curve() %>% filter(Level %in% input$Sel_Level), 
+                aes(x=Seniority,y=TotalComp),
+                color=BI_Red,alpha=0.75,size=1) + #,se=F) +
+
+      # scales and titles
+      ggtitle(paste(input$Sel_Level, " ", input$Sel_Dept, " ", input$Curve))  + # Title according to selection
+      xlab("") + ylab(ifelse(input$Currency %in% "1","bob","usd")) + # set correct currency
+      scale_x_continuous(breaks=seq(0,30,1)) + xlim(Get_Selected_XY_Limits()$x_min,NA) +
+      scale_y_continuous(labels=scales::comma) + ylim(Get_Selected_XY_Limits()$y_min,NA) +
+
+      # these are the data points for 2022
+      geom_point(aes(x=Seniority,y=PlotCol,label=ID),alpha = 0.5) +
+      geom_smooth(aes(x=Seniority,y=PlotCol),method="lm",formula=y~log(x),fill=BI_Gray) +
+
+      # THIS IS THE 2023 DATA
+      # this is the selected sub set... no need to convert usd / bob since already taken care in selected eng subset
+      geom_point(data=Eng.Data.Sub.Set.To.Plot(),
+                mapping = aes(x=Tot.Seniority,y=Total,label=Name,color=Risk),size=2,alpha = 0.75) +
+      #           aes(x=Tot.Seniority,y=Total,label=Name),size=2,alpha = 0.75) #+
+      scale_color_gradientn(colours = pal) +
+
+      #this is the selected engineer
+      geom_point(data=Eng.Data.Sub.Set.To.Plot()[Eng.Data.Sub.Set.To.Plot()$ID==engineerPropreties$ID, ],
+                 mapping = aes(x=engineerPropreties$Seniority, 
+                    y=engineerPropreties$TotalComp,
+                    label=Name), 
+                    color="red",shape=21, 
+                    fill = "red",size=3,alpha=0.75) #+
+#theme(axis.title.y = element_text(margin = margin(t = 10),size=14))
+ )
+})
+
+PlotNextLevelCurve <- reactive({
+  ggplotly(
+  if(is.na(Next.Level())) {
+    ggplot() # do nothing if Next.Level() == NA
+    } else {
+      Payroll.2022.To.Plot() %>% filter(Level %in% Next.Level()) %>% 
+      ggplot() +
+
+      # this is the Target Curve
+      geom_line(data=Eng.Target.Curve() %>% filter(Level %in% Next.Level()), 
+                aes(x=Seniority,y=TotalComp),
+                color=BI_Blue,alpha=0.75,size=1) + #,se=F) +
+
+      # this is the Market Curve
+      geom_line(data=Eng.Market.Curve() %>% filter(Level %in% Next.Level()),
+                aes(x=Seniority,y=TotalComp), 
+                color=BI_Red,alpha=0.75,size=1) + #,se=F) +
+
+      ggtitle(paste(Next.Level(), " ", input$Sel_Dept, " ", input$Curve))  + # Title according to selection
+      # xlab("") + ylab("usd") + # set correct currency
+      # scale_x_continuous(breaks=seq(1,30,1)) +
+      # scale_y_continuous(breaks=seq(500,35000,250*1)) +
+      # geom_point(aes(x=Seniority,y=Total,label=ID),alpha = 0.5) +
+      # geom_smooth(aes(x=Seniority,y=Total),method="lm",formula=y~log(x)) +
+
+      xlab("") + ylab(ifelse(input$Currency %in% "1","bob","usd")) + # set correct currency
+
+      scale_x_continuous(breaks=seq(0,30,1)) + xlim(Get_Selected_XY_Limits(Sel_Level = Next.Level())$x_min,NA) +
+      scale_y_continuous(labels=comma) + ylim(Get_Selected_XY_Limits(Sel_Level = Next.Level())$y_min,NA) +
+
+      geom_point(aes(x=Seniority,y=PlotCol,label=ID),alpha = 0.5) +
+      geom_smooth(aes(x=Seniority,y=PlotCol),method="lm",formula=y~log(x),fill=BI_Gray) +
+
+      # THIS IS THE 2023 DATA
+      # this is the selected sub set... no need to convert usd / bob since already taken care in selected eng subset
+      geom_point(data=Eng.Data.Sub.Set.To.Plot(),
+                 aes(x=Tot.Seniority,y=Total,label=Name,color=Risk),size=2,alpha = 0.75) +
+      #           aes(x=Tot.Seniority,y=Total,label=Name),size=2,alpha = 0.75) #+
+      scale_color_gradientn(colours = pal) +
+
+      #this is the selected engineer
+      geom_point(data=Eng.Data.Sub.Set.To.Plot()[Eng.Data.Sub.Set.To.Plot()$ID==engineerPropreties$ID, ],
+                 aes(x=engineerPropreties$Seniority, 
+                     y=engineerPropreties$TotalComp,
+                     label=Name), 
+                 color="red",shape=21,fill = "red",size=3,alpha=0.75) #+
+    # theme(axis.title.y = element_text(margin = margin(t = 10),size=14))
+      }
+  )
+})
+
+PlotCurrentLevelBands <- reactive({
+  ggplotly( # use static salary bands now
+     plot_ly() %>%
+    add_trace(data = Salary.Bands %>% filter(Dept %in% input$Sel_Dept & Level %in% input$Sel_Level),
+              x = ~Band,
+              lowerfence = ~min, q1 = ~low, median = ~mid, q3 = ~top, upperfence = ~max,
+              color = ~Band,
+              colors = c(BI_Gray,BI_Blue,BI_Red),
+              type = "box") %>%
+    layout(title = paste(input$Sel_Level, " ", input$Sel_Dept, " ", "TotalComp"),
+           xaxis = list(title = ''),
+           yaxis = list(title = 'usd',range =
+                          c(Get_Selected_XY_Limits()$y_min,
+                            Get_Selected_XY_Limits()$y_max)),
+           legend = list(title=list(text='<b> Band </b>')),
+           shapes = list(hline(engineerPropreties$TotalComp,"gray"))) # total comp + overrides
+   )
+})
+
+PlotNextLevelBands <- reactive({
+  ggplotly(
+  if(is.na(Next.Level())) {
+    ggplot() # do nothing if Next.Level() == NA
+  } else {
+    plot_ly() %>%
+    add_trace(data = Salary.Bands %>% filter(Dept %in% input$Sel_Dept & Level %in% Next.Level()),
+              x = ~Band,
+              lowerfence = ~min, q1 = ~low, median = ~mid, q3 = ~top, upperfence = ~max,
+              color = ~Band,
+              colors = c(BI_Gray,BI_Blue,BI_Red),
+              type = "box") %>%
+    layout(title = paste(Next.Level(), " ", input$Sel_Dept, " ", "TotalComp"),
+           xaxis = list(title = ''),
+           yaxis = list(title = 'usd',range =
+                          c(Get_Selected_XY_Limits(Sel_Level = Next.Level())$y_min,
+                            Get_Selected_XY_Limits(Sel_Level = Next.Level())$y_max)),
+           legend = list(title=list(text='<b> Band </b>')),
+           shapes = list(hline(engineerPropreties$TotalComp,"gray")))
+    }
+  )
+})
+
+#### Details Tab #####
+GetEngDetailsTable <- reactive({
+  getAnnualImpactValues()
+  if(length(input$table_rows_selected>0)){
+    overridesToUpdate <- NULL
+    currentTotals <- NULL
+    if(isAnyOverrideValue()){
+      overridesToUpdate <- GetOverrideValues(engineerPropreties$BasicoGanado,
+                          engineerPropreties$Risk,
+                          engineerPropreties$TotalComp,
+                          engineerPropreties$NetPay,
+                          engineerPropreties$TotalCost,
+                          engineerPropreties$TotalGanado) %>% filter(Changed==TRUE)
+      currentTotals <- Get.Single.General.Totals(
+          Eng.Payroll[Eng.Payroll$ID==engineerPropreties$ID,],
+          "USD")
+    }
+    else{
+      InitializeAnnualImpactReactValues()
+    }
+      
+  engDetail <- Get.Single.General(Eng.Payroll[Eng.Payroll$ID==engineerPropreties$ID,], 
+                               overridesToUpdate, input$Sel_Month, "USD")
+  if(!is.null(currentTotals)){
+    totalCol <- "Total"
+    engineerPropreties$AnnualBasicDiff <- -currentTotals["Basic",totalCol] + 
+      engDetail["Basic",totalCol]
+    engineerPropreties$AnnualRiskDiff <- -currentTotals["Risk",totalCol] + 
+      engDetail["Risk",totalCol]
+    engineerPropreties$AnnualTotalCompDiff <- -currentTotals["TotalComp", totalCol] + 
+      engDetail["TotalComp", totalCol]
+    engineerPropreties$AnnualNetPayDiff <- -currentTotals["NetPay", totalCol] + 
+      engDetail["NetPay", totalCol]
+    engineerPropreties$AnnualTotalCostDiff <- -currentTotals["TotalCost", totalCol] + 
+      engDetail["TotalCost", totalCol]
+  }
+  else{
+    InitializeAnnualImpactReactValues()
+  }
+  
+  datatable(engDetail,
+            extensions = "RowGroup",
+            selection = 'single', rownames = TRUE, class = 'cell-border stripe',
+            options = list(rowGroup = list(dataSrc = 14), 
+                           dom= "t", paging = FALSE,
+                           columnDefs = list(list(visible=FALSE, targets=c(14)))),
+            callback = JS(
+            "table.on('click', 'tr.dtrg-group', function () {",
+            "  var rowsCollapse = $(this).nextUntil('.dtrg-group');",
+            "  $(rowsCollapse).toggleClass('hidden');",
+            "});")
+            ) %>% formatCurrency(1:13)
+  }
+  else{
+      InitializeAnnualImpactReactValues()
+      datatable(data.frame())
+    }
+})
+
+GetLatDetailsTable <- reactive({
+  if(length(input$table_rows_selected>0)) # prevent error when table is empty
+  { 
+  
+    overridesToUpdate <- NULL
+    if(isAnyOverrideValue()){
+      overridesToUpdate <- GetOverrideValues(engineerPropreties$BasicoGanado,
+                      engineerPropreties$Risk,
+                      engineerPropreties$TotalComp,
+                      engineerPropreties$NetPay,
+                      engineerPropreties$TotalCost,
+                      engineerPropreties$TotalGanado) %>% filter(Changed==TRUE)
+  }
+  
+    engDetail <- Get.Single.General(Selected_User_Full_Data_Lat(), 
+                               overridesToUpdate, input$Sel_Month, "USD")
+    datatable(engDetail,
+            extensions = "RowGroup",
+            selection = 'single', rownames = TRUE, class = 'cell-border stripe',
+            options = list(rowGroup = list(dataSrc = 14), 
+                           dom= "t", paging = FALSE,
+                           columnDefs = list(list(visible=FALSE, targets=c(14)))),
+            callback = JS(
+            "table.on('click', 'tr.dtrg-group', function () {",
+            "  var rowsCollapse = $(this).nextUntil('.dtrg-group');",
+            "  $(rowsCollapse).toggleClass('hidden');",
+            "});")
+            ) %>% formatCurrency(1:13)
+  }
+  else{
+    datatable(data.frame())
+  }
+})
+
+GetBolDetailsTable <- reactive({
+   if(length(input$table_rows_selected>0)) # prevent error when table is empty
+  { 
+    engDetail <- Get.Single.General(Selected_User_Full_Data_Bol(), 
+                               NULL, input$Sel_Month, "BOB")
+    datatable(engDetail,
+              extensions = "RowGroup",
+              selection = 'single', rownames = TRUE, class = 'cell-border stripe',
+              options = list(rowGroup = list(dataSrc = 14), 
+                             dom= "t", paging = FALSE,
+                             columnDefs = list(list(visible=FALSE, targets=c(14)))),
+              callback = JS(
+              "table.on('click', 'tr.dtrg-group', function () {",
+              "  var rowsCollapse = $(this).nextUntil('.dtrg-group');",
+              "  $(rowsCollapse).toggleClass('hidden');",
+              "});")
+              ) %>% formatCurrency(1:13, "")
+   }
+  else{
+    datatable(data.frame())
+  }
+})
+```
+
+# Sidebar {.sidebar}
+
+```{r global_sidebar}
+# Global sidebar for all pages
+
+# Select ID
+numericInput(inputId="Eng_ID", 
+               label=h6("Engineer ID:"),
+               value = NA,
+               min = NA,
+               max = NA,
+               step = 1,
+              width = NULL)
+
+# Select Unit
+selectInput("Sel_Unit", 
+            label=h6("Engineering Unit:"),
+            choices=unit_levels, 
+            multiple = TRUE
+            #selected=unit_levels[1] # removed the selection by default
+            )
+
+# Select Department
+selectInput("Sel_Dept", 
+            label=h6("Department:"),
+            choices=dept_levels, 
+            multiple = FALSE,
+            selected=dept_levels[1]
+            )
+
+# Select Department
+selectInput("Sel_Level", 
+            label=h6("Level:"),
+            choices=eng_levels, 
+            multiple = FALSE,
+            selected=eng_levels[1]
+            )
+
+# Select Aniversary
+selectInput("Sel_Aniv", 
+            label=h6("Aniversary:"),
+            choices=month_levels, 
+            multiple = TRUE,
+            selected=month_levels[1:12]
+            )
+
+# Select Current Month... ideally current month should be month of current date
+selectInput("Sel_Month", 
+            label=h6("Current Month:"),
+            choices=month_levels, 
+            multiple = FALSE,
+            selected=month_levels[month(Sys.Date())]) # set the current month as default value
+
+sliderInput(inputId = "Seniority.Range", # select seniority range to consider 
+            label = h6("Year Range:"),
+            min = 0,
+            max = 35,
+            value = c(0,30), 
+            step = 1)
+
+# radioButtons(inputId = "Currency", 
+#              label = h6("Currency"),
+#              choices = c("BOB" = 1.0,"USD" = 6.96),
+#              selected = 6.96,
+#              inline = T)
+
+radioButtons(inputId = "Curve", 
+             label = h6("Salary Curve"),
+             choices = c("Basic" = "Basic","TotalComp" = "TotalComp"),
+             selected = "TotalComp",
+             inline = T)
+
+# *** *** ***
+# override section... if the values below are entered, they are considered overrides
+
+fluidRow(
+  column(6,
+    renderUI({createSelectInput1()})),
+  column(5,
+    numericInput("raiseSelectionOverride1", "", value = NA))
+         )
+fluidRow(
+  column(6,
+    renderUI({createSelectInput2()})),
+  column(5,
+    numericInput("raiseSelectionOverride2", "", value = NA))
+         )
+fluidRow(
+  column(6,
+    renderUI({createSelectInput3()})),
+  column(5,
+    numericInput("raiseSelectionOverride3", "", value = NA))
+         )
+
+```
+
+# Selection {data-icon="fa-hand-o-down"}
+
+## Row
+
+### 
+
+```{r selec.vb.name }
+renderValueBox({ # Render selected employee name
+  getEmployeeName()
+})
+```
+```{r selec.vb.level.dept}
+#here the color and icon of the value box are defined based on value
+renderValueBox({ # Render selected employee name.  STILL PENDING THE NOT JCE AND > 2 YEARS ORANGE CONDITION
+  getEmployeeDepartment()
+})
+```
+```{r selec.vb.aniversary}
+renderValueBox({ # Render selected anniversary
+  getEmployeeAniversary()
+})
+```
+```{r selec.vb.city.country}
+renderValueBox({
+  getEmployeeCity()
+})
+```
+
+### 
+
+```{r selec.vb.360.value}
+renderValueBox({ # Render selected employee 360 raise
+  getEmployee360()
+})
+```
+```{r selec.vb.prom.value}
+renderValueBox({  # render Prom raise override; includes usd/bob conversion + percentage
+  getEmployeePromValue()
+})
+```
+```{r selec.vb.Lead}
+renderValueBox({  # render Prom raise override; includes usd/bob conversion + percentage
+  getEmployeeLeadValue()
+})
+```
+```{r selec.vb.City}
+renderValueBox({  # render Prom raise override; includes usd/bob conversion + percentage
+  getEmployeeCityBonus()
+})
+```
+
+### 
+
+```{r selec.vb.ENG}
+renderValueBox({ # Render selected employee 360 raise
+  getEmployeeEngBonus()
+})
+```
+```{r selec.vb.BSU}
+renderValueBox({ # Render selected employee 360 raise
+  getEmployeeBsuBonus()
+})
+```
+```{r selec.vb.Client}
+renderValueBox({ # Render selected employee 360 raise
+  getEmployeeClientBonus()
+})
+```
+```{r selec.vb.Risk}
+renderValueBox({  # render Prom raise override; includes usd/bob conversion + percentage
+  getEmployeeOtherBonus()
+})
+```
+
+### 
+```{r selec.vb.Basic}
+  renderValueBox({ # Render selected employee Hire Date
+  getEmployeeBasicGanado()
+})
+```
+```{r selec.vb.TG}
+  renderValueBox({ # Render selected employee Hire Date
+  getEmployeeTRiskTGanado()
+})
+```
+```{r selec.vb.TC}
+  renderValueBox({ # Render selected employee Jala Seniority
+  getEmployeeTotalCompTotalCost()
+})
+```
+```{r selec.vb.Net}
+renderValueBox({ # Render selected employee Total Seniority
+  getEmployeeNetPayLiquido()
+})
+```
+
+## Row
+
+### Filtered Engineer Set
+
+```{r selected_engineers_table_original}
+#need to add escape=false so it can interpret html and have an hyperlink embeded
+DTOutput("table") # fixing bug 71 Known issues with the Grid in RStudio
+output$table <- renderDataTable(datatable(Eng.Data.Sub.Set()%>%select(-X_ID,-RealID), escape=FALSE, selection = 'single',
+                                          rownames = FALSE,
+                                          extensions = c('FixedColumns'), 
+                                          options = list(fixedColumns = list(leftColumns = 2), 
+                                                         autoWidth = TRUE,
+                                                         pageLength = 25,
+                                                         columnDefs = list(list(width = '260px', targets = 1), #name
+                                                                           list(width =  '50px', targets = 5), #unit
+                                                                           list(width = '220px', targets = 8), #manager
+                                                                           list(width = '150px', targets = 10),#client
+                                                                           list(width =  '50px', targets = 42),#billing s
+                                                                           list(width = '120px', targets = 44),#level project admin fit
+                                                                           list(width =  '50px', targets = 45), #Dept
+                                                                           list(visible = FALSE, targets = c("JS.Seniority") #Do not display this column in the table, it was added for feature #164
+                                                                           ))
+                                          ) 
+                                ))
+observeEvent(input$table_cell_clicked, ignoreNULL = TRUE, ignoreInit = TRUE, {
+  updateNumericInput(
+      session = getDefaultReactiveDomain(),
+      inputId = "raiseSelectionOverride1",
+      label = NULL,
+      value = NA
+    )
+    
+    updateNumericInput(
+      session = getDefaultReactiveDomain(),
+      inputId = "raiseSelectionOverride2",
+      label = NULL,
+      value = NA
+    )
+    
+    updateNumericInput(
+      session = getDefaultReactiveDomain(),
+      inputId = "raiseSelectionOverride3",
+      label = NULL,
+      value = NA
+    )
+})
+```
+
+# Summary {data-icon="fa-address-book"}
+
+## Row
+
+### 
+
+```{r summary.vb.name}
+renderValueBox({ # Render selected employee name
+  getEmployeeName()
+})
+
+```
+```{r summary.vb.level.dept}
+#here the color and icon of the value box are defined based on value
+renderValueBox({ # Render selected employee name.  STILL PENDING THE NOT JCE AND > 2 YEARS ORANGE CONDITION
+  getEmployeeDepartment()
+})
+```
+```{r summary.vb.aniversary}
+renderValueBox({ # Render selected anniversary
+  getEmployeeAniversary()
+})
+```
+```{r summary.vb.city.country}
+renderValueBox({
+  getEmployeeCity()
+})
+```
+
+### 
+
+```{r summary.vb.360.value}
+renderValueBox({ # Render selected employee 360 raise
+  getEmployee360()
+})
+```
+```{r summary.vb.prom.value}
+renderValueBox({  # render Prom raise override; includes usd/bob conversion + percentage
+  getEmployeePromValue()
+})
+```
+```{r summary.vb.Lead}
+renderValueBox({  # render Prom raise override; includes usd/bob conversion + percentage
+  getEmployeeLeadValue()
+})
+```
+```{r summary.vb.City}
+renderValueBox({  # render Prom raise override; includes usd/bob conversion + percentage
+  getEmployeeCityBonus()
+})
+```
+
+###
+
+```{r summary.vb.ENG}
+renderValueBox({ # Render selected employee 360 raise
+  getEmployeeEngBonus()
+})
+```
+```{r summary.vb.BSU}
+renderValueBox({ # Render selected employee 360 raise
+  getEmployeeBsuBonus()
+})
+```
+```{r summary.vb.Client}
+renderValueBox({ # Render selected employee 360 raise
+  getEmployeeClientBonus()
+})
+```
+```{r summary.vb.Risk}
+renderValueBox({  # render Prom raise override; includes usd/bob conversion + percentage
+  getEmployeeOtherBonus()
+})
+```
+
+### 
+```{r summary.vb.TG}
+  renderValueBox({ # Render selected employee Hire Date
+  getEmployeeTRiskTGanado()
+})
+```
+```{r summary.vb.TC}
+  renderValueBox({ # Render selected employee Jala Seniority
+  getEmployeeTotalCompTotalCost()
+})
+```
+```{r summary.vb.Net}
+renderValueBox({ # Render selected employee Total Seniority
+  getEmployeeNetPayLiquido()
+})
+```
+```{r summary.vb.PIRComp}
+  renderValueBox({ # Render selected employee Hire Date
+  getEmployeePIRComparatio()
+})
+```
+
+## Row
+
+### Current Level Bands
+
+```{r engineer_current_level_bands}
+renderPlotly(PlotCurrentLevelBands())
+```
+
+### Next Level Bands
+
+```{r engineer_next_level_bands}
+renderPlotly(PlotNextLevelBands())
+```
+
+## Row
+
+### Current Level Curve
+
+```{r engineer_current_curve}
+# here we define the plot coordinate system depending on the selected engineer level
+pal <- wes_palette("Zissou1", 100, type = "continuous")
+renderPlotly(PlotCurrentLevelCurve())
+```
+
+### Next Level Curve
+
+```{r engineer_next_level_curve}
+# here we define the plot coordinate system depending on the selected engineer level
+pal <- wes_palette("Zissou1", 100, type = "continuous")
+renderPlotly(PlotNextLevelCurve())
+```
+
+# Detail {data-icon="fa-address-card"}
+
+## Row
+
+### 
+
+```{r selec.vb.name.detail}
+renderValueBox({ # Render selected employee name
+  getEmployeeName()
+})
+```
+```{r selec.vb.level.dept.detail}
+#here the color and icon of the value box are defined based on value
+renderValueBox({ # Render selected employee name.  STILL PENDING THE NOT JCE AND > 2 YEARS ORANGE CONDITION
+  getEmployeeDepartment()
+})
+```
+```{r selec.vb.aniversary.detail}
+renderValueBox({ # Render selected anniversary
+  getEmployeeAniversary()
+})
+```
+```{r selec.vb.city.country.detail}
+renderValueBox({
+  getEmployeeCity()
+})
+```
+
+### 
+
+```{r selec.vb.360.value.detail}
+renderValueBox({ # Render selected employee 360 raise
+  getEmployee360()
+})
+```
+```{r selec.vb.prom.value.detail}
+renderValueBox({  # render Prom raise override; includes usd/bob conversion + percentage
+  getEmployeePromValue()
+})
+```
+```{r selec.vb.Lead.detail}
+renderValueBox({  # render Prom raise override; includes usd/bob conversion + percentage
+  getEmployeeLeadValue()
+})
+```
+```{r selec.vb.City.detail}
+renderValueBox({  # render Prom raise override; includes usd/bob conversion + percentage
+ getEmployeeCityBonus()
+})
+```
+
+###
+
+```{r selec.vb.ENG.detail}
+renderValueBox({ # Render selected employee 360 raise
+  getEmployeeEngBonus()
+})
+```
+```{r selec.vb.BSU.detail}
+renderValueBox({ # Render selected employee 360 raise
+  getEmployeeBsuBonus()
+})
+```
+```{r selec.vb.Client.detail}
+renderValueBox({ # Render selected employee 360 raise
+  getEmployeeClientBonus()
+})
+```
+```{r selec.vb.Risk.detail}
+renderValueBox({  # render Prom raise override; includes usd/bob conversion + percentage
+  getEmployeeOtherBonus()
+})
+```
+
+### 
+```{r selec.vb.Basic.detail}
+valueBoxOutput("AnnualBasicImpact")
+```
+```{r selec.vb.TG.detail}
+# })
+valueBoxOutput("AnnualTotalCompImpact")
+```
+```{r selec.vb.TC.detail}
+valueBoxOutput("AnnualNetPayImpact")
+```
+```{r selec.vb.Net.detail}
+valueBoxOutput("AnnualTotalCostImpact")
+```
+
+## Row {.tabset .tabset-fade}
+
+### Eng Details USD
+
+```{r Eng.Details}
+# here we show the full salary info of the selected engineer
+renderDataTable(GetEngDetailsTable())
+```
+
+### Bol Details BOB
+
+```{r Bol.Details}
+# here we show the full salary info of the selected engineer
+renderDataTable(GetBolDetailsTable())
+```
+
+### Lat Details USD
+
+```{r Lat.Details}
+# here we show the full salary info of the selected engineer
+renderDataTable(GetLatDetailsTable())
+```
+
+# Tracking {data-icon="fa-line-chart"}
+
+## Row
+
+### 
+
+```{r summary.dif.360}
+renderValueBox({ # Render selected employee name
+  summary.360 <- Summarize.360.Totals()
+  tmp <- "Tot 360 Difference: $"
+  tmp <- paste(tmp, prettyNum(summary.360[13,]$Inc.360.Dif,big.mark = ","))
+  ld.color <- JS.Blue
+  #tmp <- paste(VB.Name, engineerPropreties$Name)
+  #VB.Name <- paste(VB.Name,Selected_User_Data()$Name) #Name
+  valueBox(h4(tmp,style = "color:white;text-align:left"),
+           color = ld.color
+           )
+})
+```
+
+###
+
+```{r summary.dif.Prom}
+#here the color and icon of the value box are defined based on value
+renderValueBox({ # Render selected employee name.  STILL PENDING THE NOT JCE AND > 2 YEARS ORANGE CONDITION
+  summary.prom <- Summarize.Prom.Totals()
+  ld.color <- JS.Blue
+  tmp <- "Tot Prom Difference: $"
+  tmp <- paste(tmp, prettyNum(summary.prom[13,]$Inc.Prom.Dif,big.mark = ","))
+  #tmp <- paste(VB.Name, engineerPropreties$Name)
+  #VB.Name <- paste(VB.Name,Selected_User_Data()$Name) #Name
+  valueBox(h4(tmp,style = "color:white;text-align:left"),
+           color = ld.color
+           )
+})
+```
+
+###
+
+```{r summary.dif.All}
+renderValueBox({ # Render selected anniversary
+  summary <- Summarize.360.Totals()[13,]$Inc.360.Dif + Summarize.Prom.Totals()[13,]$Inc.Prom.Dif
+  ld.color <- JS.Blue
+  tmp <- "Tot Difference: $"
+  tmp <- paste(tmp, prettyNum(summary,big.mark = ","))
+  #VB.Name <- paste(VB.Name,Selected_User_Data()$Name) #Name
+  valueBox(h4(tmp,style = "color:white;text-align:left"),
+           color = ld.color
+           )
+})
+```
+
+###
+
+```{r summary.budget.All}
+renderValueBox({ # Render selected anniversary
+  summary <- Summarize.360.Totals()[13,]$X.Inc.360 + Summarize.Prom.Totals()[13,]$X.Inc.Prom
+  ld.color <- JS.Blue
+  tmp <- "Tot 360 + Prom Budget: $"
+  tmp <- paste(tmp, prettyNum(summary,big.mark = ","))
+  #tmp <- paste(tmp, formatCurrency(summary, '\U20AC'))
+  #VB.Name <- paste(VB.Name,Selected_User_Data()$Name) #Name
+  valueBox(h4(tmp,style = "color:white;text-align:left")
+           #color = ld.color
+           )
+})
+```
+
+## Row
+
+### Cumulative Estimated vs Executed 360 Budget per unit
+
+```{r budget_tracking_360_chart}
+pal <- wes_palette("Zissou1", 100, type = "continuous")
+renderPlotly(
+  ggplotly(
+      Get.360.Estimated.And.Executed.Budget(Get_360.Prom.Budget(),Get_Estimated.360.Prom.Budget()) %>% 
+      ggplot() +
+            xlab("") + ylab("") +  
+      geom_smooth(aes(x=Month,y=E.Inc.360,group=1),se=FALSE,color=BI_Blue,alpha = 0.5) +  
+      geom_point(aes(x=Month,y=E.Inc.360,group=1),color=BI_Blue) +
+      geom_smooth(aes(x=Month,y=X.Inc.360,group=1),se=FALSE,color=BI_Red,alpha = 0.5) +  
+      geom_point(aes(x=Month,y=X.Inc.360,group=1),color=BI_Red)))
+```
+
+### Cumulative Estimated vs Executed Prom Budget per unit
+
+```{r budget_tracking_prom_chart}
+pal <- wes_palette("Zissou1", 100, type = "continuous")
+renderPlotly(
+  ggplotly(
+      Get.Prom.Estimated.And.Executed.Budget(Get_360.Prom.Budget(),Get_Estimated.360.Prom.Budget()) %>% 
+      ggplot() +
+            xlab("") + ylab("") +  
+      geom_smooth(aes(x=Month,y=E.Inc.Prom,group=1),se=FALSE,color=BI_Blue,alpha = 0.5) +  
+      geom_point(aes(x=Month,y=E.Inc.Prom,group=1),color=BI_Blue) +
+      geom_smooth(aes(x=Month,y=X.Inc.Prom,group=1),se=FALSE,color=BI_Red,alpha = 0.5) +  
+      geom_point(aes(x=Month,y=X.Inc.Prom,group=1),color=BI_Red)))
+```
+
+## Row
+
+### Cumulative Estimated vs Executed 360 Budget per unit
+
+```{r Cumulative_Estimated_vs_Executed_360}
+renderDT(
+    rbind(Get.360.Estimated.And.Executed.Budget(Get_360.Prom.Budget(),Get_Estimated.360.Prom.Budget()),
+          Get.360.Estimated.And.Executed.Budget(Get_360.Prom.Budget(),Get_Estimated.360.Prom.Budget()) %>%
+            summarise(Month="Tot",E.Inc.360 = sum(E.Inc.360), X.Inc.360=sum(X.Inc.360),Inc.360.Dif=sum(Inc.360.Dif))),
+    rownames = F,
+    options = list(
+      dom="t",
+      paging = FALSE,
+      pageLength = 13
+))
+```
+
+### Cumulative Estimated vs Executed Prom Budget per unit
+
+```{r Cumulative_Estimated_vs_Executed_Prom}
+renderDT(
+    rbind(Get.Prom.Estimated.And.Executed.Budget(Get_360.Prom.Budget(),Get_Estimated.360.Prom.Budget()),
+          Get.Prom.Estimated.And.Executed.Budget(Get_360.Prom.Budget(),Get_Estimated.360.Prom.Budget()) %>%
+           summarise(Month="Tot",E.Inc.Prom = sum(E.Inc.Prom), X.Inc.Prom=sum(X.Inc.Prom),Inc.Prom.Dif=sum(Inc.Prom.Dif))),
+    rownames = F,
+    options = list(
+      dom="t",
+      paging = FALSE,
+      pageLength = 13
+)) 
+```
+
+# Risk {data-icon="fa-exclamation-triangle"}
+
+# Career {data-icon="fa-university"}
+
+# History {data-icon="fa-history"}
+
+# Simulation {data-icon="fa-calculator"}
+
+## Row
+
+### Candidate Basic Data
+
+```{r basic-candidate-data}
+# here we show all the candidate data NOT $ related...
+
+```
+
+### Current Curve
+
+```{r current_curve}
+
+###
+```
+
+## Row
+
+### Candidate Salary Data
+
+```{r detailed-candidate-cash-data}
+# here we show all the candidate $$ related...
+
+```
+
+### Next Level Curve
+
+```{r next_curve_table}
+
+```
+
+# Log {data-icon="fa-book"}
+
+### Chart A
+
+```{r temporal table}
+# here we should try to log the app info
+
+#__export__.hr_employee_1739
+
+
+# add a summary row at the end of the table
+# m = matrix(c(
+#   '<b>Bold</b>', '<em>Emphasize</em>', '<a href="http://rstudio.com">RStudio</a>',
+#   '<a href="#" onclick="alert(\'Hello World\');">Hello</a>'
+# ), 2)
+# colnames(m) = c('<span style="color:red">Column 1</span>', '<em>Column 2</em>')
+
+
+```
+
+
+# Settings {data-icon="fa-cogs"}
+
+## Row
+
+### Payroll BI FL Dashboard
+
+```{r version}
+## Column {data-width="650"}
+
+h4(paste("Version ",Software.Version),style = "color:black;text-align:left")
+
+```
+
+### 
+
+```{r theme}
+## Column {data-width="650"}
+
+#renderValueBox({ "themeSelector()" })
+
+```
